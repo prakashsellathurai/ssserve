@@ -1,0 +1,15 @@
+{
+    "version": 1,
+    "project": "ssserve",
+    "project_url": "https://github.com/prakashsellathurai/ssserve",
+    "repo": ".",
+    "branches": ["main"],
+    "show_commit_url": "https://github.com/prakashsellathurai/ssserve/commit/",
+    "pythons": ["3.12"],
+    "environment_type": "virtualenv",
+    "benchmark_dir": "benchmarks",
+    "env_dir": ".asv/env",
+    "results_dir": ".asv/results",
+    "html_dir": ".asv/html",
+    "default_benchmark_timeout": 60
+}

@@ -1,0 +1,24 @@
+[project]
+name = "ssserve"
+version = "0.1.0"
+description = "Static file serving and directory listing — Python port of vercel/serve"
+requires-python = ">=3.10"
+dependencies = ["click>=8.0"]
+license = { text = "MIT" }
+
+[project.scripts]
+ssserve = "ssserve.cli:main"
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["ssserve"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "psutil>=6",
+    "asv>=0.6.5",
+]
