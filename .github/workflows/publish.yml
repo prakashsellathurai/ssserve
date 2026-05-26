@@ -32,12 +32,21 @@ jobs:
         run: |
           version=$(grep '^version = ' pyproject.toml | head -1 | sed 's/^version = "\(.*\)"/\1/')
           echo "version=$version" >> "$GITHUB_OUTPUT"
+
           if git rev-parse "v$version" >/dev/null 2>&1; then
             echo "Tag v$version already exists — nothing to publish"
             echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+
+          pypi_ver=$(curl -sL "https://pypi.org/pypi/ssserve/json" | python3 -c "import sys,json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null || echo "")
+          if [ "$version" = "$pypi_ver" ]; then
+            echo "Version $version already on PyPI — nothing to publish"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Build
         if: steps.check.outputs.changed == 'true'
@@ -50,7 +59,8 @@ jobs:
       - name: Create tag
         if: steps.check.outputs.changed == 'true'
         run: |
+          version=${{ steps.check.outputs.version }}
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "v${{ steps.check.outputs.version }}"
-          git push origin "v${{ steps.check.outputs.version }}"
+          git tag "v$version"
+          git push origin "v$version"
