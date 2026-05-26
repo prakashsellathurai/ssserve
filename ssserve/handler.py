@@ -125,7 +125,8 @@ class ServeHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body_bytes)))
         self._apply_common_headers()
         self.end_headers()
-        self.wfile.write(body_bytes)
+        if self.command != "HEAD":
+            self.wfile.write(body_bytes)
         self._log_request(status, len(body_bytes))
 
     def _apply_common_headers(self) -> None:
@@ -371,10 +372,11 @@ class ServeHandler(BaseHTTPRequestHandler):
             self._send_redirect(url_path, 301)
             return
 
-        cu_result = self._check_clean_urls(url_path)
-        if cu_result:
-            self._send_redirect(cu_result, 301)
-            return
+        if self.command != "HEAD":
+            cu_result = self._check_clean_urls(url_path)
+            if cu_result:
+                self._send_redirect(cu_result, 301)
+                return
 
         ts_result = self._check_trailing_slash(url_path)
         if ts_result:
