@@ -35,4 +35,14 @@ jobs:
       - name: Run benchmarks (quick)
         run: |
           uv run asv machine --yes
-          uv run asv run --python=same --quick --show-stderr
+          uv run asv run --python=same --quick --show-stderr \
+            --set-commit-hash=$(git rev-parse HEAD)
+
+      - name: Publish benchmark HTML
+        run: uv run asv publish
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: asv-results
+          path: .asv/
