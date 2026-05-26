@@ -125,6 +125,8 @@ Tests run automatically on CI via `.github/workflows/tests.yml`.
 
 Micro-benchmarks using [airspeed velocity](https://asv.readthedocs.io/) track performance of core operations across commits:
 
+sserve [benchmark](https://prakashsellathurai.com/ssserve/benchmarks/)
+
 | Benchmark | What it measures |
 |---|---|
 | `TimeRouteToRegex` | Pattern compilation for route matching |
