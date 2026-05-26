@@ -40,7 +40,8 @@ jobs:
         run: |
           uv run asv machine --yes
           uv run asv run --python=same --quick --show-stderr
-          
+          uv run asv publish
+
       - name: Copy ASV results to benchmarks directory
         run: |
           mkdir -p _site/benchmarks
