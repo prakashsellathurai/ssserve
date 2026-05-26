@@ -4,17 +4,21 @@
 
 Python port of [vercel/serve](https://github.com/vercel/serve) — static file serving and directory listing. (vibecoded)
 
+
+## Run
+
+run directly without installing:
+
+```bash
+uvx ssserve
+```
+
 ## Install
 
 ```bash
 uv tool install ssserve
 ```
 
-Or run directly without installing:
-
-```bash
-uv run --from ssserve ssserve
-```
 
 ## Usage
 
