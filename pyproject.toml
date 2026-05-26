@@ -1,10 +1,11 @@
 [project]
 name = "ssserve"
-version = "0.1.0"
-description = "Static file serving and directory listing — Python port of vercel/serve"
+version = "0.2.0"
+dynamic = ["description"]
+readme = "README.md"
 requires-python = ">=3.10"
 dependencies = ["click>=8.0"]
-license = { text = "MIT" }
+license = "MIT"
 
 [project.scripts]
 ssserve = "ssserve.cli:main"
@@ -21,4 +22,5 @@ dev = [
     "pytest>=8",
     "psutil>=6",
     "asv>=0.6.5",
+    "setuptools>=82.0.1",
 ]
