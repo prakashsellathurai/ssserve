@@ -1,9 +1,10 @@
 name: Publish ASV Benchmarks
 
 on:
-  push:
-    branches:
-      - main
+  workflow_run:
+    workflows: ["Benchmarks"]
+    types:
+      - completed
 
 permissions:
   contents: write
@@ -11,10 +12,14 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    if: >
+      github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.head_branch == 'main'
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - uses: actions/setup-python@v5
         with:
@@ -23,11 +28,20 @@ jobs:
       - name: Install uv
         run: pip install uv
 
+      - name: Download benchmark results
+        uses: actions/download-artifact@v4
+        with:
+          name: asv-results
+          path: .asv/
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+
       - name: Install dependencies
         run: uv sync --group dev
 
       - name: Publish to gh-pages
         run: |
+          git fetch origin gh-pages
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           uv run asv gh-pages --rewrite
