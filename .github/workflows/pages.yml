@@ -54,8 +54,7 @@ jobs:
       - name: Build index.html from README.md
         run: |
           mkdir -p _site
-          cp theme.css _site/
-          pandoc -f markdown -t html5 --standalone --metadata title="ssserve" --css=theme.css -o _site/index.html README.md
+          pandoc -f markdown -t html5 --standalone --metadata title="ssserve" -c https://cdn.simplecss.org/simple.min.css -o _site/index.html README.md
           
       - name: Upload Pages Artifact
         uses: actions/upload-pages-artifact@v3
