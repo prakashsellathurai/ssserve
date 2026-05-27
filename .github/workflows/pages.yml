@@ -1,66 +1,33 @@
-name: GitHub Pages
+name: Publish ASV Benchmarks
 
 on:
   push:
-    branches: [main]
-  workflow_dispatch:
+    branches:
+      - main
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: true
+  contents: write
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Setup Python
-        uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
-          
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
       - name: Install uv
         run: pip install uv
-        
+
       - name: Install dependencies
         run: uv sync --group dev
-        
-      - name: Validate benchmarks are well-formed
-        run: uv run asv check --python=same
-        
-      - name: Run benchmarks (quick)
-        run: |
-          uv run asv machine --yes
-          uv run asv run --python=same --quick --show-stderr
-          uv run asv publish
 
-      - name: Copy ASV results to benchmarks directory
+      - name: Publish to gh-pages
         run: |
-          mkdir -p _site/benchmarks
-          cp -r .asv/html/* _site/benchmarks/
-      
-      - name: Install pandoc
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq pandoc
-        
-      - name: Build index.html from README.md
-        run: |
-          mkdir -p _site
-          pandoc -f markdown -t html5 --standalone --metadata title="ssserve" -c https://cdn.simplecss.org/simple.min.css -o _site/index.html README.md
-          
-      - name: Upload Pages Artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: _site
-          
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          uv run asv gh-pages --rewrite
