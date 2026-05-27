@@ -1,0 +1,224 @@
+{
+    "benchmarks.TimeFormatDate.time_format": {
+        "code": "class TimeFormatDate:\n    def time_format(self):\n        format_date(1700000000.0)",
+        "min_run_count": 2,
+        "name": "benchmarks.TimeFormatDate.time_format",
+        "number": 0,
+        "param_names": [],
+        "params": [],
+        "repeat": 0,
+        "rounds": 2,
+        "sample_time": 0.01,
+        "type": "time",
+        "unit": "seconds",
+        "version": "ab4f156780c5d6b6d4e63ff5927e15945c4806e87a149ff19d71b4c03728950b",
+        "warmup_time": -1
+    },
+    "benchmarks.TimeFormatSize.time_format": {
+        "code": "class TimeFormatSize:\n    def time_format(self, size):\n        format_size(size)",
+        "min_run_count": 2,
+        "name": "benchmarks.TimeFormatSize.time_format",
+        "number": 0,
+        "param_names": [
+            "param1"
+        ],
+        "params": [
+            [
+                "0",
+                "500",
+                "2048",
+                "1048576",
+                "1073741824"
+            ]
+        ],
+        "repeat": 0,
+        "rounds": 2,
+        "sample_time": 0.01,
+        "type": "time",
+        "unit": "seconds",
+        "version": "32cdbfca55e2886b2a569e37a2db6520bae594fafd43747d99abbbbba6630b31",
+        "warmup_time": -1
+    },
+    "benchmarks.TimeMatchGlob.time_list": {
+        "code": "class TimeMatchGlob:\n    def time_list(self):\n        _match_glob_list(\"hidden.txt\", [\".git\", \".DS_Store\", \"*.txt\"])",
+        "min_run_count": 2,
+        "name": "benchmarks.TimeMatchGlob.time_list",
+        "number": 0,
+        "param_names": [],
+        "params": [],
+        "repeat": 0,
+        "rounds": 2,
+        "sample_time": 0.01,
+        "type": "time",
+        "unit": "seconds",
+        "version": "aaa30bbddbeda7e82865eb58372b86896b70cbb167f1ccedc9d6f3daac0ebf4a",
+        "warmup_time": -1
+    },
+    "benchmarks.TimeMatchGlob.time_negative": {
+        "code": "class TimeMatchGlob:\n    def time_negative(self):\n        _match_glob(\"/api/users/123\", \"!/api/users/*\")",
+        "min_run_count": 2,
+        "name": "benchmarks.TimeMatchGlob.time_negative",
+        "number": 0,
+        "param_names": [],
+        "params": [],
+        "repeat": 0,
+        "rounds": 2,
+        "sample_time": 0.01,
+        "type": "time",
+        "unit": "seconds",
+        "version": "514da9c30685491a5694243c0d5862960d5aeb4abc593c240bda565581ff5273",
+        "warmup_time": -1
+    },
+    "benchmarks.TimeMatchGlob.time_simple": {
+        "code": "class TimeMatchGlob:\n    def time_simple(self):\n        _match_glob(\"/api/users/123\", \"/api/users/*\")",
+        "min_run_count": 2,
+        "name": "benchmarks.TimeMatchGlob.time_simple",
+        "number": 0,
+        "param_names": [],
+        "params": [],
+        "repeat": 0,
+        "rounds": 2,
+        "sample_time": 0.01,
+        "type": "time",
+        "unit": "seconds",
+        "version": "90fe5644841738e23b31270892af1264c48386f27631247b52e615085c5a1224",
+        "warmup_time": -1
+    },
+    "benchmarks.TimeMergeConfig.time_merge": {
+        "code": "class TimeMergeConfig:\n    def time_merge(self):\n        merge_config(Config.defaults(), self.overrides)\n\n    def setup(self):\n        self.overrides = {\n            \"public\": \"dist\",\n            \"cleanUrls\": True,\n            \"directoryListing\": False,\n            \"rewrites\": [\n                {\"source\": \"/api/*\", \"destination\": \"/api/$1\"}\n            ],\n            \"redirects\": [\n                {\"source\": \"/old\", \"destination\": \"/new\", \"type\": 301}\n            ],\n            \"headers\": [\n                {\"source\": \"**/*.js\", \"headers\": [{\"key\": \"Cache-Control\", \"value\": \"public,max-age=31536000,immutable\"}]}\n            ],\n        }",
+        "min_run_count": 2,
+        "name": "benchmarks.TimeMergeConfig.time_merge",
+        "number": 0,
+        "param_names": [],
+        "params": [],
+        "repeat": 0,
+        "rounds": 2,
+        "sample_time": 0.01,
+        "type": "time",
+        "unit": "seconds",
+        "version": "f019984fcde29f3f15c33b8c706bb254b56172ca649c22258a4eb34ba844e5ee",
+        "warmup_time": -1
+    },
+    "benchmarks.TimeParseByteRange.time_parse": {
+        "code": "class TimeParseByteRange:\n    def time_parse(self, header):\n        _parse_byte_range(header, 1000)",
+        "min_run_count": 2,
+        "name": "benchmarks.TimeParseByteRange.time_parse",
+        "number": 0,
+        "param_names": [
+            "param1"
+        ],
+        "params": [
+            [
+                "'bytes=0-99'",
+                "'bytes=100-199'",
+                "'bytes=-100'"
+            ]
+        ],
+        "repeat": 0,
+        "rounds": 2,
+        "sample_time": 0.01,
+        "type": "time",
+        "unit": "seconds",
+        "version": "79ddecc2573c21b43635585dc725e0e160e1ad696f41155820df4bf479526425",
+        "warmup_time": -1
+    },
+    "benchmarks.TimeParseListen.time_parse": {
+        "code": "class TimeParseListen:\n    def time_parse(self, value):\n        parse_listen(value)",
+        "min_run_count": 2,
+        "name": "benchmarks.TimeParseListen.time_parse",
+        "number": 0,
+        "param_names": [
+            "param1"
+        ],
+        "params": [
+            [
+                "'tcp://0.0.0.0:3000'",
+                "'tcp://127.0.0.1:8080'",
+                "'unix:/tmp/test.sock'"
+            ]
+        ],
+        "repeat": 0,
+        "rounds": 2,
+        "sample_time": 0.01,
+        "type": "time",
+        "unit": "seconds",
+        "version": "46e46f0b7462e21e7131ccd1d5174afe6d4216292d78b845b70af3c0db9f0a40",
+        "warmup_time": -1
+    },
+    "benchmarks.TimeRenderListing.time_render": {
+        "code": "class TimeRenderListing:\n    def time_render(self):\n        from ssserve.listing import render_listing\n    \n        render_listing(\"/\", self.tmpdir, self.entries)\n\n    def setup(self):\n        self.tmpdir = tempfile.mkdtemp()\n        for i in range(100):\n            name = f\"file{i}.html\"\n            path = os.path.join(self.tmpdir, name)\n            with open(path, \"w\") as f:\n                f.write(f\"<h1>{i}</h1>\")\n        self.entries = list(os.scandir(self.tmpdir))",
+        "min_run_count": 2,
+        "name": "benchmarks.TimeRenderListing.time_render",
+        "number": 0,
+        "param_names": [],
+        "params": [],
+        "repeat": 0,
+        "rounds": 2,
+        "sample_time": 0.01,
+        "type": "time",
+        "unit": "seconds",
+        "version": "23ee0393ad762e81480ce86c868448fddf8f5341ca6b97a1ceb6baf770bfc4c6",
+        "warmup_time": -1
+    },
+    "benchmarks.TimeRouteToRegex.time_complex": {
+        "code": "class TimeRouteToRegex:\n    def time_complex(self):\n        _route_to_regex(\"/api/:resource/:id/**\")",
+        "min_run_count": 2,
+        "name": "benchmarks.TimeRouteToRegex.time_complex",
+        "number": 0,
+        "param_names": [],
+        "params": [],
+        "repeat": 0,
+        "rounds": 2,
+        "sample_time": 0.01,
+        "type": "time",
+        "unit": "seconds",
+        "version": "9f10f09535547d86f411c8af816d68ac9cc35eae9d51af7a8c587927f28dffeb",
+        "warmup_time": -1
+    },
+    "benchmarks.TimeRouteToRegex.time_simple": {
+        "code": "class TimeRouteToRegex:\n    def time_simple(self):\n        _route_to_regex(\"/api/users\")",
+        "min_run_count": 2,
+        "name": "benchmarks.TimeRouteToRegex.time_simple",
+        "number": 0,
+        "param_names": [],
+        "params": [],
+        "repeat": 0,
+        "rounds": 2,
+        "sample_time": 0.01,
+        "type": "time",
+        "unit": "seconds",
+        "version": "011341c676c08cfc7e0b38e501e79d8c528d739faa3719b8a6c1899d8264247d",
+        "warmup_time": -1
+    },
+    "benchmarks.TimeRouteToRegex.time_with_param": {
+        "code": "class TimeRouteToRegex:\n    def time_with_param(self):\n        _route_to_regex(\"/api/users/:id\")",
+        "min_run_count": 2,
+        "name": "benchmarks.TimeRouteToRegex.time_with_param",
+        "number": 0,
+        "param_names": [],
+        "params": [],
+        "repeat": 0,
+        "rounds": 2,
+        "sample_time": 0.01,
+        "type": "time",
+        "unit": "seconds",
+        "version": "1390658c422b2bf33a779239d57aa4e7fb26ea0f9d56d8c351ac1bbf0c7f22ce",
+        "warmup_time": -1
+    },
+    "benchmarks.TimeRouteToRegex.time_with_wildcard": {
+        "code": "class TimeRouteToRegex:\n    def time_with_wildcard(self):\n        _route_to_regex(\"/api/:resource/*\")",
+        "min_run_count": 2,
+        "name": "benchmarks.TimeRouteToRegex.time_with_wildcard",
+        "number": 0,
+        "param_names": [],
+        "params": [],
+        "repeat": 0,
+        "rounds": 2,
+        "sample_time": 0.01,
+        "type": "time",
+        "unit": "seconds",
+        "version": "384db2fb87fed9c6bace2f4be27edf7005dbd132bc564e612ac9762e1ae86fe7",
+        "warmup_time": -1
+    },
+    "version": 2
+}

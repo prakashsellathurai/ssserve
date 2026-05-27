@@ -46,4 +46,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: asv-results
-          path: .asv/
+          path: |
+            .asv/results
+            .asv/html

@@ -33,7 +33,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: asv-results
-          path: .asv/
+          path: .
           github-token: ${{ github.token }}
           run-id: ${{ github.event.workflow_run.id }}
 
