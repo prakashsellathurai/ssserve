@@ -1,0 +1,79 @@
+from __future__ import annotations
+
+import os
+import threading
+import time
+
+
+INJECT_SCRIPT = """<script>
+(function(){var v=%d;
+function c(){var x=new XMLHttpRequest();
+x.open("GET","/__ssserve/lr-check?v="+v,true);
+x.onload=function(){try{var d=JSON.parse(x.responseText);if(d.reload){location.reload()}else{v=d.version}}catch(e){}};
+x.send()}
+setInterval(c,1000)})()
+</script>"""
+
+
+class LiveReload:
+    def __init__(self, root_dir: str, interval: float = 1.0) -> None:
+        self.root_dir = os.path.abspath(root_dir)
+        self.interval = interval
+        self._version = 0
+        self._lock = threading.Lock()
+        self._snapshot: dict[str, float] = {}
+        self._running = False
+        self._thread: threading.Thread | None = None
+
+    @property
+    def version(self) -> int:
+        with self._lock:
+            return self._version
+
+    def _walk(self) -> dict[str, float]:
+        snap: dict[str, float] = {}
+        try:
+            for dirpath, dirnames, filenames in os.walk(self.root_dir):
+                dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+                for fn in filenames:
+                    if fn.startswith("."):
+                        continue
+                    fp = os.path.join(dirpath, fn)
+                    try:
+                        snap[fp] = os.stat(fp).st_mtime
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+        return snap
+
+    def _watch(self) -> None:
+        self._snapshot = self._walk()
+        while self._running:
+            time.sleep(self.interval)
+            current = self._walk()
+            if current != self._snapshot:
+                self._snapshot = current
+                with self._lock:
+                    self._version += 1
+
+    def start(self) -> None:
+        if self._running:
+            return
+        self._running = True
+        self._thread = threading.Thread(target=self._watch, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=5)
+            self._thread = None
+
+    @staticmethod
+    def inject_script(html: str, version: int) -> str:
+        script = INJECT_SCRIPT % version
+        idx = html.rfind("</body>")
+        if idx == -1:
+            return html + "\n" + script
+        return html[:idx] + script + "\n" + html[idx:]

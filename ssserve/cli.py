@@ -13,6 +13,7 @@ import click
 from ssserve import __version__
 from ssserve.config import load_config
 from ssserve.handler import ServeHandler
+from ssserve.livereload import LiveReload
 from ssserve.network import Address, find_free_port, get_lan_ip, parse_listen
 
 
@@ -99,6 +100,7 @@ def _print_startup(
 @click.option("--ssl-key", type=click.Path(exists=True, dir_okay=False), help="SSL/TLS private key (PEM)")
 @click.option("--ssl-pass", type=click.Path(exists=True, dir_okay=False), help="SSL/TLS passphrase file")
 @click.option("--no-port-switching", is_flag=True, help="Don't switch to another port when port is taken")
+@click.option("-r", "--live-reload", is_flag=True, help="Enable live reload on file changes")
 @click.version_option(version=__version__, prog_name="ssserve")
 def main(
     path: str,
@@ -115,6 +117,7 @@ def main(
     ssl_key: str | None,
     ssl_pass: str | None,
     no_port_switching: bool,
+    live_reload: bool,
 ) -> None:
     root_dir = os.path.abspath(path) if path else os.getcwd()
 
@@ -142,6 +145,13 @@ def main(
     ServeHandler.no_compression = no_compression
     ServeHandler.no_port_switching = no_port_switching
     ServeHandler.root_dir = root_dir
+
+    lr: LiveReload | None = None
+    if live_reload:
+        lr = LiveReload(root_dir)
+        lr.start()
+        ServeHandler.live_reload = lr
+        click.echo("  ➜ Live reload enabled")
 
     listeners = []
     for listen_val in listen:
