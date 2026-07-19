@@ -44,6 +44,7 @@ Defaults to current directory and port 3000.
 | `--ssl-key FILE` | SSL private key (PEM) |
 | `--ssl-pass FILE` | SSL passphrase file |
 | `--no-port-switching` | Don't auto-switch if port is taken |
+| `-r, --live-reload` | Live reload browser on file changes |
 | `-d, --debug` | Debug output |
 | `--version` | Show version |
 | `--help` | Show help |
@@ -56,6 +57,12 @@ ssserve
 
 # Serve specific directory on port 5000 with CORS
 ssserve -l 5000 -C ./my-site
+
+# Serve with live reload for development
+ssserve -r .
+
+# Serve with live reload on custom port
+ssserve -l 5000 -r ./my-site
 
 # Serve with HTTPS
 ssserve --ssl-cert cert.pem --ssl-key key.pem
@@ -114,6 +121,7 @@ uv run pytest tests/e2e/ -v
 | File | Tests | What it covers |
 |---|---|---|
 | `tests/e2e/test_behavior.py` | 47 | File serving, directory listing, clean URLs, redirects, rewrites, CORS, gzip, ETag/304, Range requests, SPA mode, custom headers, symlinks, path traversal |
+| `tests/e2e/test_livereload.py` | 8 | Script injection, `/__ssserve/lr-check` endpoint, file change detection, version tracking |
 | `tests/e2e/test_performance.py` | 8 | Latency (p50/p95/p99), TTFB, gzip vs raw, concurrent throughput — measure-only |
 | `tests/e2e/test_resources.py` | 7 | RSS memory, CPU usage, file descriptor count — measure-only |
 
