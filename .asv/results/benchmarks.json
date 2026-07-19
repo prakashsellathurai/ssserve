@@ -39,6 +39,54 @@
         "version": "32cdbfca55e2886b2a569e37a2db6520bae594fafd43747d99abbbbba6630b31",
         "warmup_time": -1
     },
+    "benchmarks.TimeLiveReloadInjectScript.time_inject": {
+        "code": "class TimeLiveReloadInjectScript:\n    def time_inject(self, n):\n        LiveReload.inject_script(self.html, 42)\n\n    def setup(self, n):\n        body = \"x\" * (n * 1024)\n        self.html = f\"<html><head></head><body>{body}</body></html>\"",
+        "min_run_count": 2,
+        "name": "benchmarks.TimeLiveReloadInjectScript.time_inject",
+        "number": 0,
+        "param_names": [
+            "param1"
+        ],
+        "params": [
+            [
+                "0",
+                "1",
+                "10",
+                "100"
+            ]
+        ],
+        "repeat": 0,
+        "rounds": 2,
+        "sample_time": 0.01,
+        "type": "time",
+        "unit": "seconds",
+        "version": "66f9ef42d752c436fa6b55f52d6c75be1e265d7a04cd0fcdfc01a97907f6e2a6",
+        "warmup_time": -1
+    },
+    "benchmarks.TimeLiveReloadWalk.time_walk": {
+        "code": "class TimeLiveReloadWalk:\n    def time_walk(self, n):\n        self.lr._walk()\n\n    def setup(self, n):\n        self.tmpdir = tempfile.mkdtemp()\n        for i in range(n):\n            p = os.path.join(self.tmpdir, f\"file{i}.txt\")\n            with open(p, \"w\") as f:\n                f.write(\"x\" * 100)\n        self.lr = LiveReload(self.tmpdir)",
+        "min_run_count": 2,
+        "name": "benchmarks.TimeLiveReloadWalk.time_walk",
+        "number": 0,
+        "param_names": [
+            "param1"
+        ],
+        "params": [
+            [
+                "0",
+                "10",
+                "100",
+                "1000"
+            ]
+        ],
+        "repeat": 0,
+        "rounds": 2,
+        "sample_time": 0.01,
+        "type": "time",
+        "unit": "seconds",
+        "version": "5b4fa2da94d5190916efe45eb9aa3eb9f16cbe48496b67603f0e835c64ae20d3",
+        "warmup_time": -1
+    },
     "benchmarks.TimeMatchGlob.time_list": {
         "code": "class TimeMatchGlob:\n    def time_list(self):\n        _match_glob_list(\"hidden.txt\", [\".git\", \".DS_Store\", \"*.txt\"])",
         "min_run_count": 2,

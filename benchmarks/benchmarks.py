@@ -1,10 +1,12 @@
 import os
 import re
+import shutil
 import tempfile
 
 from ssserve.config import Config, merge_config
 from ssserve.handler import _match_glob, _match_glob_list, _parse_byte_range, _route_to_regex
 from ssserve.listing import format_date, format_size
+from ssserve.livereload import LiveReload
 from ssserve.network import parse_listen
 
 
@@ -105,3 +107,32 @@ class TimeRenderListing:
         from ssserve.listing import render_listing
 
         render_listing("/", self.tmpdir, self.entries)
+
+
+class TimeLiveReloadWalk:
+    params = [0, 10, 100, 1000]
+
+    def setup(self, n):
+        self.tmpdir = tempfile.mkdtemp()
+        for i in range(n):
+            p = os.path.join(self.tmpdir, f"file{i}.txt")
+            with open(p, "w") as f:
+                f.write("x" * 100)
+        self.lr = LiveReload(self.tmpdir)
+
+    def time_walk(self, n):
+        self.lr._walk()
+
+    def teardown(self, n):
+        shutil.rmtree(self.tmpdir)
+
+
+class TimeLiveReloadInjectScript:
+    params = [0, 1, 10, 100]
+
+    def setup(self, n):
+        body = "x" * (n * 1024)
+        self.html = f"<html><head></head><body>{body}</body></html>"
+
+    def time_inject(self, n):
+        LiveReload.inject_script(self.html, 42)
