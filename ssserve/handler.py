@@ -16,6 +16,7 @@ from http.server import BaseHTTPRequestHandler
 
 from ssserve.config import Config
 from ssserve.listing import render_listing
+from ssserve.livereload import LiveReload
 
 
 def _route_to_regex(pattern: str) -> re.Pattern:
@@ -87,6 +88,7 @@ class ServeHandler(BaseHTTPRequestHandler):
     logging_enabled: bool = True
     no_compression: bool = False
     no_port_switching: bool = False
+    live_reload: LiveReload | None = None
     root_dir: str = os.getcwd()
 
     def log_message(self, format: str, *args) -> None:
@@ -244,6 +246,22 @@ class ServeHandler(BaseHTTPRequestHandler):
     def _is_unlisted(self, name: str) -> bool:
         return _match_glob_list(name, self.config.unlisted)
 
+    def _handle_lr_check(self) -> None:
+        import json
+        from urllib.parse import parse_qs, urlparse
+        params = parse_qs(urlparse(self.path).query)
+        client_version = int(params.get("v", [0])[0])
+        current = self.live_reload.version
+        data = json.dumps({"reload": current > client_version, "version": current})
+        body = data.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self._apply_common_headers()
+        self.end_headers()
+        self.wfile.write(body)
+        self._log_request(200, len(body))
+
     def _serve_file(self, fs_path: str, url_path: str, byte_range: tuple[int, int] | None = None) -> None:
         try:
             stat = os.stat(fs_path)
@@ -297,6 +315,17 @@ class ServeHandler(BaseHTTPRequestHandler):
                     except (TypeError, OSError):
                         pass
 
+        _lr_html: bytes | None = None
+        if self.live_reload and not byte_range and mime.startswith("text/html"):
+            try:
+                with open(fs_path, "rb") as f:
+                    _lr_html = self.live_reload.inject_script(
+                        f.read().decode("utf-8"), self.live_reload.version
+                    ).encode("utf-8")
+                content_length = len(_lr_html)
+            except (OSError, UnicodeDecodeError):
+                _lr_html = None
+
         accept_encoding = self.headers.get("Accept-Encoding", "")
         use_gzip = (
             not self.no_compression
@@ -306,14 +335,11 @@ class ServeHandler(BaseHTTPRequestHandler):
         gzipped_data = None
         if use_gzip and not byte_range:
             try:
-                with open(fs_path, "rb") as f:
-                    raw = f.read()
+                raw = _lr_html if _lr_html is not None else open(fs_path, "rb").read()
                 gzipped_data = gzip.compress(raw)
                 content_length = len(gzipped_data)
             except OSError:
                 gzipped_data = None
-        else:
-            gzipped_data = None
 
         self.send_response(status)
         self.send_header("Content-Type", mime)
@@ -357,6 +383,8 @@ class ServeHandler(BaseHTTPRequestHandler):
                             break
                         self.wfile.write(data)
                         remaining -= len(data)
+            elif _lr_html is not None:
+                self.wfile.write(_lr_html)
             else:
                 with open(fs_path, "rb") as f:
                     self.copyfile(f, self.wfile)
@@ -367,6 +395,10 @@ class ServeHandler(BaseHTTPRequestHandler):
 
     def _handle_request(self) -> None:
         url_path = self._normalize_path(self.path)
+
+        if self.live_reload and url_path.startswith("/__ssserve/"):
+            self._handle_lr_check()
+            return
 
         if url_path != self.path:
             self._send_redirect(url_path, 301)
@@ -420,6 +452,8 @@ class ServeHandler(BaseHTTPRequestHandler):
                         self._send_redirect(url_path + "/", 301)
                         return
                     html = render_listing(url_path, fs_path, entries)
+                    if self.live_reload:
+                        html = self.live_reload.inject_script(html, self.live_reload.version)
                     body = html.encode("utf-8")
                     self.send_response(HTTPStatus.OK)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
