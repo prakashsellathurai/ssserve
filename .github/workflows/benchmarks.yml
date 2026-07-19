@@ -33,9 +33,26 @@ jobs:
       - name: Validate benchmarks are well-formed
         run: uv run asv check --python=same
 
+      - name: Configure ASV machine
+        run: |
+          uv run python -c "
+import platform, json, os
+d = {
+    'machine': platform.node(),
+    'os': f'{platform.system()} {platform.release()}',
+    'arch': platform.machine(),
+    'cpu': 'unknown',
+    'num_cpu': os.cpu_count() or 1,
+    'ram': 'unknown',
+}
+os.makedirs(os.path.expanduser('~/.asv'), exist_ok=True)
+with open(os.path.expanduser('~/.asv/machine.json'), 'w') as f:
+    json.dump(d, f, indent=2)
+"
+
       - name: Run benchmarks (quick)
         run: |
-          uv run asv machine --yes
+          git branch -f main HEAD 2>/dev/null || true
           uv run asv run --python=same --quick --show-stderr \
             --set-commit-hash=$(git rev-parse HEAD)
 
