@@ -49,6 +49,7 @@ def _create_server(
 def _print_startup(
     addr: Address,
     cors: bool,
+    caching: bool,
     ssl_active: bool,
     no_port_switching: bool,
     no_compression: bool,
@@ -77,6 +78,8 @@ def _print_startup(
 
     if cors:
         click.echo("  ➜ CORS enabled")
+    if not caching:
+        click.echo("  ➜ Browser caching disabled")
     if ssl_active:
         click.echo("  ➜ SSL enabled")
     if not no_compression:
@@ -93,6 +96,7 @@ def _print_startup(
 @click.option("-c", "--config", type=click.Path(exists=True, dir_okay=False), help="Path to serve.json config")
 @click.option("-L", "--no-request-logging", is_flag=True, help="Disable request logging")
 @click.option("-C", "--cors", is_flag=True, help="Enable CORS")
+@click.option("--caching", is_flag=True, help="Enable browser caching (disabled by default)")
 @click.option("-u", "--no-compression", is_flag=True, help="Disable compression")
 @click.option("--no-etag", is_flag=True, help="Disable ETag (use Last-Modified)")
 @click.option("-S", "--symlinks", is_flag=True, help="Resolve symlinks")
@@ -110,6 +114,7 @@ def main(
     config: str | None,
     no_request_logging: bool,
     cors: bool,
+    caching: bool,
     no_compression: bool,
     no_etag: bool,
     symlinks: bool,
@@ -139,6 +144,7 @@ def main(
 
     ServeHandler.config = cfg
     ServeHandler.cors = cors
+    ServeHandler.caching = caching
     ServeHandler.single = single
     ServeHandler.debug = debug
     ServeHandler.logging_enabled = not no_request_logging
@@ -174,7 +180,7 @@ def main(
 
     if len(listeners) == 1:
         addr, port_switched = listeners[0]
-        _print_startup(addr, cors, ssl_active, no_port_switching, no_compression, port_switched)
+        _print_startup(addr, cors, caching, ssl_active, no_port_switching, no_compression, port_switched)
         server = _create_server(addr, ServeHandler, ssl_cert, ssl_key, ssl_pass)
         try:
             server.serve_forever()
@@ -184,7 +190,7 @@ def main(
     else:
         servers = []
         for addr, port_switched in listeners:
-            _print_startup(addr, cors, ssl_active, no_port_switching, no_compression, port_switched)
+            _print_startup(addr, cors, caching, ssl_active, no_port_switching, no_compression, port_switched)
             server = _create_server(addr, ServeHandler, ssl_cert, ssl_key, ssl_pass)
             servers.append(server)
 

@@ -286,6 +286,23 @@ class TestCaching:
         assert "ETag" not in headers
         assert "Last-Modified" in headers
 
+    def test_no_store_cache_header_by_default(self, server_url: str):
+        _, headers, _ = _get(f"{server_url}/about.html")
+        assert "no-store" in headers.get("Cache-Control", "")
+
+    def test_no_store_on_directory_listing(self, server_url: str):
+        _, headers, _ = _get(f"{server_url}/downloads/")
+        assert "no-store" in headers.get("Cache-Control", "")
+
+    def test_no_store_on_error_page(self, server_url: str):
+        _, headers, _ = _get(f"{server_url}/nonexistent.html")
+        assert "no-store" in headers.get("Cache-Control", "")
+
+    def test_caching_flag_disables_no_store(self, test_dir: Path, server_factory):
+        url = server_factory(test_dir, extra_args=["--caching"])
+        _, headers, _ = _get(f"{url}/about.html")
+        assert "Cache-Control" not in headers or "no-store" not in headers["Cache-Control"]
+
 
 class TestSPAMode:
     def test_spa_mode_serves_index_for_404(self, test_dir: Path, server_factory):
