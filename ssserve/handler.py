@@ -83,6 +83,7 @@ class ServeHandler(BaseHTTPRequestHandler):
 
     config: Config = Config.defaults()
     cors: bool = False
+    caching: bool = False
     single: bool = False
     debug: bool = False
     logging_enabled: bool = True
@@ -132,6 +133,8 @@ class ServeHandler(BaseHTTPRequestHandler):
         self._log_request(status, len(body_bytes))
 
     def _apply_common_headers(self) -> None:
+        if not self.caching:
+            self.send_header("Cache-Control", "no-store")
         if self.cors:
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Access-Control-Allow-Headers", "*")
