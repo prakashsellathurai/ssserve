@@ -265,8 +265,7 @@ class ServeHandler(BaseHTTPRequestHandler):
 
     def _check_redirects(self, url_path: str) -> tuple[str, int] | None:
         for rule in self.config.redirects:
-            regex = _route_to_regex(rule.source)
-            m = regex.match(url_path)
+            m = rule.compiled_regex.match(url_path)
             if m:
                 dest = _apply_segments(rule.destination, m.groupdict())
                 return dest, rule.type
@@ -274,8 +273,7 @@ class ServeHandler(BaseHTTPRequestHandler):
 
     def _check_rewrites(self, url_path: str) -> str | None:
         for rule in self.config.rewrites:
-            regex = _route_to_regex(rule.source)
-            m = regex.match(url_path)
+            m = rule.compiled_regex.match(url_path)
             if m:
                 return _apply_segments(rule.destination, m.groupdict())
         return None

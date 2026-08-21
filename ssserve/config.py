@@ -2,14 +2,31 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
+
+
+def _route_to_regex(pattern: str) -> re.Pattern:
+    parts = []
+    for segment in pattern.split("/"):
+        if segment.startswith(":"):
+            parts.append(f"(?P<{segment[1:]}>[^/]+)")
+        elif "*" in segment:
+            parts.append(re.escape(segment).replace(r"\*\*", ".*").replace(r"\*", "[^/]*"))
+        else:
+            parts.append(re.escape(segment))
+    return re.compile(f"^{'/'.join(parts)}$")
 
 
 @dataclass
 class Rewrite:
     source: str
     destination: str
+    compiled_regex: re.Pattern = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.compiled_regex = _route_to_regex(self.source)
 
 
 @dataclass
@@ -17,6 +34,10 @@ class Redirect:
     source: str
     destination: str
     type: int = 301
+    compiled_regex: re.Pattern = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.compiled_regex = _route_to_regex(self.source)
 
 
 @dataclass
