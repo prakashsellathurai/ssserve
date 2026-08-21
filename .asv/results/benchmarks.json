@@ -1,8 +1,8 @@
 {
-    "benchmarks.TimeFormatDate.time_format": {
-        "code": "class TimeFormatDate:\n    def time_format(self):\n        format_date(1700000000.0)",
+    "benchmarks.BenchmarkBinaryServing.time_large_binary_5mb": {
+        "code": "class BenchmarkBinaryServing:\n    def time_large_binary_5mb(self):\n        _fetch(f\"{self.base}/file-5mb.bin\")\n\n    def setup(self):\n        self.tmpdir = tempfile.mkdtemp()\n        _populate_dir(self.tmpdir)\n        self.port = _find_free_port()\n        self.proc = _start_server(self.tmpdir, self.port)\n        self.base = f\"http://localhost:{self.port}\"",
         "min_run_count": 2,
-        "name": "benchmarks.TimeFormatDate.time_format",
+        "name": "benchmarks.BenchmarkBinaryServing.time_large_binary_5mb",
         "number": 0,
         "param_names": [],
         "params": [],
@@ -11,86 +11,13 @@
         "sample_time": 0.01,
         "type": "time",
         "unit": "seconds",
-        "version": "ab4f156780c5d6b6d4e63ff5927e15945c4806e87a149ff19d71b4c03728950b",
+        "version": "7077953963510736d70747aabd76233261123187e07d1a77e227080a082a8499",
         "warmup_time": -1
     },
-    "benchmarks.TimeFormatSize.time_format": {
-        "code": "class TimeFormatSize:\n    def time_format(self, size):\n        format_size(size)",
+    "benchmarks.BenchmarkBinaryServing.time_medium_binary_100kb": {
+        "code": "class BenchmarkBinaryServing:\n    def time_medium_binary_100kb(self):\n        _fetch(f\"{self.base}/file-100kb.bin\")\n\n    def setup(self):\n        self.tmpdir = tempfile.mkdtemp()\n        _populate_dir(self.tmpdir)\n        self.port = _find_free_port()\n        self.proc = _start_server(self.tmpdir, self.port)\n        self.base = f\"http://localhost:{self.port}\"",
         "min_run_count": 2,
-        "name": "benchmarks.TimeFormatSize.time_format",
-        "number": 0,
-        "param_names": [
-            "param1"
-        ],
-        "params": [
-            [
-                "0",
-                "500",
-                "2048",
-                "1048576",
-                "1073741824"
-            ]
-        ],
-        "repeat": 0,
-        "rounds": 2,
-        "sample_time": 0.01,
-        "type": "time",
-        "unit": "seconds",
-        "version": "32cdbfca55e2886b2a569e37a2db6520bae594fafd43747d99abbbbba6630b31",
-        "warmup_time": -1
-    },
-    "benchmarks.TimeLiveReloadInjectScript.time_inject": {
-        "code": "class TimeLiveReloadInjectScript:\n    def time_inject(self, n):\n        LiveReload.inject_script(self.html, 42)\n\n    def setup(self, n):\n        body = \"x\" * (n * 1024)\n        self.html = f\"<html><head></head><body>{body}</body></html>\"",
-        "min_run_count": 2,
-        "name": "benchmarks.TimeLiveReloadInjectScript.time_inject",
-        "number": 0,
-        "param_names": [
-            "param1"
-        ],
-        "params": [
-            [
-                "0",
-                "1",
-                "10",
-                "100"
-            ]
-        ],
-        "repeat": 0,
-        "rounds": 2,
-        "sample_time": 0.01,
-        "type": "time",
-        "unit": "seconds",
-        "version": "66f9ef42d752c436fa6b55f52d6c75be1e265d7a04cd0fcdfc01a97907f6e2a6",
-        "warmup_time": -1
-    },
-    "benchmarks.TimeLiveReloadWalk.time_walk": {
-        "code": "class TimeLiveReloadWalk:\n    def time_walk(self, n):\n        self.lr._walk()\n\n    def setup(self, n):\n        self.tmpdir = tempfile.mkdtemp()\n        for i in range(n):\n            p = os.path.join(self.tmpdir, f\"file{i}.txt\")\n            with open(p, \"w\") as f:\n                f.write(\"x\" * 100)\n        self.lr = LiveReload(self.tmpdir)",
-        "min_run_count": 2,
-        "name": "benchmarks.TimeLiveReloadWalk.time_walk",
-        "number": 0,
-        "param_names": [
-            "param1"
-        ],
-        "params": [
-            [
-                "0",
-                "10",
-                "100",
-                "1000"
-            ]
-        ],
-        "repeat": 0,
-        "rounds": 2,
-        "sample_time": 0.01,
-        "type": "time",
-        "unit": "seconds",
-        "version": "5b4fa2da94d5190916efe45eb9aa3eb9f16cbe48496b67603f0e835c64ae20d3",
-        "warmup_time": -1
-    },
-    "benchmarks.TimeMatchGlob.time_list": {
-        "code": "class TimeMatchGlob:\n    def time_list(self):\n        _match_glob_list(\"hidden.txt\", [\".git\", \".DS_Store\", \"*.txt\"])",
-        "min_run_count": 2,
-        "name": "benchmarks.TimeMatchGlob.time_list",
+        "name": "benchmarks.BenchmarkBinaryServing.time_medium_binary_100kb",
         "number": 0,
         "param_names": [],
         "params": [],
@@ -99,13 +26,13 @@
         "sample_time": 0.01,
         "type": "time",
         "unit": "seconds",
-        "version": "aaa30bbddbeda7e82865eb58372b86896b70cbb167f1ccedc9d6f3daac0ebf4a",
+        "version": "c8a55c95eea9db69d66f400cdb3b146907ecb71373a2032a191a8f1d40229d70",
         "warmup_time": -1
     },
-    "benchmarks.TimeMatchGlob.time_negative": {
-        "code": "class TimeMatchGlob:\n    def time_negative(self):\n        _match_glob(\"/api/users/123\", \"!/api/users/*\")",
+    "benchmarks.BenchmarkBinaryServing.time_small_binary_1kb": {
+        "code": "class BenchmarkBinaryServing:\n    def time_small_binary_1kb(self):\n        _fetch(f\"{self.base}/file-1kb.bin\")\n\n    def setup(self):\n        self.tmpdir = tempfile.mkdtemp()\n        _populate_dir(self.tmpdir)\n        self.port = _find_free_port()\n        self.proc = _start_server(self.tmpdir, self.port)\n        self.base = f\"http://localhost:{self.port}\"",
         "min_run_count": 2,
-        "name": "benchmarks.TimeMatchGlob.time_negative",
+        "name": "benchmarks.BenchmarkBinaryServing.time_small_binary_1kb",
         "number": 0,
         "param_names": [],
         "params": [],
@@ -114,13 +41,13 @@
         "sample_time": 0.01,
         "type": "time",
         "unit": "seconds",
-        "version": "514da9c30685491a5694243c0d5862960d5aeb4abc593c240bda565581ff5273",
+        "version": "a1cc0d4c27ff7fe99f545cee935db19c8e378742e4aa2a1b840f4a48b37e9550",
         "warmup_time": -1
     },
-    "benchmarks.TimeMatchGlob.time_simple": {
-        "code": "class TimeMatchGlob:\n    def time_simple(self):\n        _match_glob(\"/api/users/123\", \"/api/users/*\")",
+    "benchmarks.BenchmarkConcurrentThroughput.time_10_concurrent_requests": {
+        "code": "class BenchmarkConcurrentThroughput:\n    def time_10_concurrent_requests(self):\n        url = f\"{self.base}/file-1kb.bin\"\n        with ThreadPoolExecutor(max_workers=10) as ex:\n            futures = [ex.submit(_fetch, url) for _ in range(50)]\n            for f in as_completed(futures):\n                f.result()\n\n    def setup(self):\n        self.tmpdir = tempfile.mkdtemp()\n        _populate_dir(self.tmpdir)\n        self.port = _find_free_port()\n        self.proc = _start_server(self.tmpdir, self.port)\n        self.base = f\"http://localhost:{self.port}\"",
         "min_run_count": 2,
-        "name": "benchmarks.TimeMatchGlob.time_simple",
+        "name": "benchmarks.BenchmarkConcurrentThroughput.time_10_concurrent_requests",
         "number": 0,
         "param_names": [],
         "params": [],
@@ -129,13 +56,13 @@
         "sample_time": 0.01,
         "type": "time",
         "unit": "seconds",
-        "version": "90fe5644841738e23b31270892af1264c48386f27631247b52e615085c5a1224",
+        "version": "ebda1a7f70387d202b25a4ff0e7697ca8345de0b4190376e4c69c15b5c5c010c",
         "warmup_time": -1
     },
-    "benchmarks.TimeMergeConfig.time_merge": {
-        "code": "class TimeMergeConfig:\n    def time_merge(self):\n        merge_config(Config.defaults(), self.overrides)\n\n    def setup(self):\n        self.overrides = {\n            \"public\": \"dist\",\n            \"cleanUrls\": True,\n            \"directoryListing\": False,\n            \"rewrites\": [\n                {\"source\": \"/api/*\", \"destination\": \"/api/$1\"}\n            ],\n            \"redirects\": [\n                {\"source\": \"/old\", \"destination\": \"/new\", \"type\": 301}\n            ],\n            \"headers\": [\n                {\"source\": \"**/*.js\", \"headers\": [{\"key\": \"Cache-Control\", \"value\": \"public,max-age=31536000,immutable\"}]}\n            ],\n        }",
+    "benchmarks.BenchmarkConcurrentThroughput.time_50_concurrent_requests": {
+        "code": "class BenchmarkConcurrentThroughput:\n    def time_50_concurrent_requests(self):\n        url = f\"{self.base}/file-1kb.bin\"\n        with ThreadPoolExecutor(max_workers=50) as ex:\n            futures = [ex.submit(_fetch, url) for _ in range(100)]\n            for f in as_completed(futures):\n                f.result()\n\n    def setup(self):\n        self.tmpdir = tempfile.mkdtemp()\n        _populate_dir(self.tmpdir)\n        self.port = _find_free_port()\n        self.proc = _start_server(self.tmpdir, self.port)\n        self.base = f\"http://localhost:{self.port}\"",
         "min_run_count": 2,
-        "name": "benchmarks.TimeMergeConfig.time_merge",
+        "name": "benchmarks.BenchmarkConcurrentThroughput.time_50_concurrent_requests",
         "number": 0,
         "param_names": [],
         "params": [],
@@ -144,59 +71,13 @@
         "sample_time": 0.01,
         "type": "time",
         "unit": "seconds",
-        "version": "f019984fcde29f3f15c33b8c706bb254b56172ca649c22258a4eb34ba844e5ee",
+        "version": "92c12ca8584eb0bf341ec07c9f123f097061ab80ce368d33260205547dae3539",
         "warmup_time": -1
     },
-    "benchmarks.TimeParseByteRange.time_parse": {
-        "code": "class TimeParseByteRange:\n    def time_parse(self, header):\n        _parse_byte_range(header, 1000)",
+    "benchmarks.BenchmarkConcurrentThroughput.time_mixed_concurrent_assets": {
+        "code": "class BenchmarkConcurrentThroughput:\n    def time_mixed_concurrent_assets(self):\n        urls = [\n            f\"{self.base}/index.html\",\n            f\"{self.base}/style.css\",\n            f\"{self.base}/script.js\",\n            f\"{self.base}/data.json\",\n            f\"{self.base}/file-1kb.bin\",\n        ]\n        with ThreadPoolExecutor(max_workers=25) as ex:\n            futures = [ex.submit(_fetch, urls[i % len(urls)]) for i in range(50)]\n            for f in as_completed(futures):\n                f.result()\n\n    def setup(self):\n        self.tmpdir = tempfile.mkdtemp()\n        _populate_dir(self.tmpdir)\n        self.port = _find_free_port()\n        self.proc = _start_server(self.tmpdir, self.port)\n        self.base = f\"http://localhost:{self.port}\"",
         "min_run_count": 2,
-        "name": "benchmarks.TimeParseByteRange.time_parse",
-        "number": 0,
-        "param_names": [
-            "param1"
-        ],
-        "params": [
-            [
-                "'bytes=0-99'",
-                "'bytes=100-199'",
-                "'bytes=-100'"
-            ]
-        ],
-        "repeat": 0,
-        "rounds": 2,
-        "sample_time": 0.01,
-        "type": "time",
-        "unit": "seconds",
-        "version": "79ddecc2573c21b43635585dc725e0e160e1ad696f41155820df4bf479526425",
-        "warmup_time": -1
-    },
-    "benchmarks.TimeParseListen.time_parse": {
-        "code": "class TimeParseListen:\n    def time_parse(self, value):\n        parse_listen(value)",
-        "min_run_count": 2,
-        "name": "benchmarks.TimeParseListen.time_parse",
-        "number": 0,
-        "param_names": [
-            "param1"
-        ],
-        "params": [
-            [
-                "'tcp://0.0.0.0:3000'",
-                "'tcp://127.0.0.1:8080'",
-                "'unix:/tmp/test.sock'"
-            ]
-        ],
-        "repeat": 0,
-        "rounds": 2,
-        "sample_time": 0.01,
-        "type": "time",
-        "unit": "seconds",
-        "version": "46e46f0b7462e21e7131ccd1d5174afe6d4216292d78b845b70af3c0db9f0a40",
-        "warmup_time": -1
-    },
-    "benchmarks.TimeRenderListing.time_render": {
-        "code": "class TimeRenderListing:\n    def time_render(self):\n        from ssserve.listing import render_listing\n    \n        render_listing(\"/\", self.tmpdir, self.entries)\n\n    def setup(self):\n        self.tmpdir = tempfile.mkdtemp()\n        for i in range(100):\n            name = f\"file{i}.html\"\n            path = os.path.join(self.tmpdir, name)\n            with open(path, \"w\") as f:\n                f.write(f\"<h1>{i}</h1>\")\n        self.entries = list(os.scandir(self.tmpdir))",
-        "min_run_count": 2,
-        "name": "benchmarks.TimeRenderListing.time_render",
+        "name": "benchmarks.BenchmarkConcurrentThroughput.time_mixed_concurrent_assets",
         "number": 0,
         "param_names": [],
         "params": [],
@@ -205,13 +86,13 @@
         "sample_time": 0.01,
         "type": "time",
         "unit": "seconds",
-        "version": "23ee0393ad762e81480ce86c868448fddf8f5341ca6b97a1ceb6baf770bfc4c6",
+        "version": "2f6722bacefb4dfe7bb61f7068020d8bca0817901ecd9b61f5e70ca20732fc02",
         "warmup_time": -1
     },
-    "benchmarks.TimeRouteToRegex.time_complex": {
-        "code": "class TimeRouteToRegex:\n    def time_complex(self):\n        _route_to_regex(\"/api/:resource/:id/**\")",
+    "benchmarks.BenchmarkDirectoryListing.time_deep_listing": {
+        "code": "class BenchmarkDirectoryListing:\n    def time_deep_listing(self):\n        _fetch(f\"{self.base}/downloads/\")\n\n    def setup(self):\n        self.tmpdir = tempfile.mkdtemp()\n        _populate_dir(self.tmpdir)\n        self.port = _find_free_port()\n        self.proc = _start_server(self.tmpdir, self.port)\n        self.base = f\"http://localhost:{self.port}\"",
         "min_run_count": 2,
-        "name": "benchmarks.TimeRouteToRegex.time_complex",
+        "name": "benchmarks.BenchmarkDirectoryListing.time_deep_listing",
         "number": 0,
         "param_names": [],
         "params": [],
@@ -220,13 +101,13 @@
         "sample_time": 0.01,
         "type": "time",
         "unit": "seconds",
-        "version": "9f10f09535547d86f411c8af816d68ac9cc35eae9d51af7a8c587927f28dffeb",
+        "version": "50859c236f7d1f68bd2e0c7e88673fb64b711ebc40ee77349801a62302a6999d",
         "warmup_time": -1
     },
-    "benchmarks.TimeRouteToRegex.time_simple": {
-        "code": "class TimeRouteToRegex:\n    def time_simple(self):\n        _route_to_regex(\"/api/users\")",
+    "benchmarks.BenchmarkDirectoryListing.time_root_listing": {
+        "code": "class BenchmarkDirectoryListing:\n    def time_root_listing(self):\n        _fetch(f\"{self.base}/\")\n\n    def setup(self):\n        self.tmpdir = tempfile.mkdtemp()\n        _populate_dir(self.tmpdir)\n        self.port = _find_free_port()\n        self.proc = _start_server(self.tmpdir, self.port)\n        self.base = f\"http://localhost:{self.port}\"",
         "min_run_count": 2,
-        "name": "benchmarks.TimeRouteToRegex.time_simple",
+        "name": "benchmarks.BenchmarkDirectoryListing.time_root_listing",
         "number": 0,
         "param_names": [],
         "params": [],
@@ -235,13 +116,13 @@
         "sample_time": 0.01,
         "type": "time",
         "unit": "seconds",
-        "version": "011341c676c08cfc7e0b38e501e79d8c528d739faa3719b8a6c1899d8264247d",
+        "version": "97e317cf2e22c643acfb71e25e70e6d2b9b53fa8ef21e60246cedac9f495a42d",
         "warmup_time": -1
     },
-    "benchmarks.TimeRouteToRegex.time_with_param": {
-        "code": "class TimeRouteToRegex:\n    def time_with_param(self):\n        _route_to_regex(\"/api/users/:id\")",
+    "benchmarks.BenchmarkDirectoryListing.time_subdirectory_listing": {
+        "code": "class BenchmarkDirectoryListing:\n    def time_subdirectory_listing(self):\n        _fetch(f\"{self.base}/blog/\")\n\n    def setup(self):\n        self.tmpdir = tempfile.mkdtemp()\n        _populate_dir(self.tmpdir)\n        self.port = _find_free_port()\n        self.proc = _start_server(self.tmpdir, self.port)\n        self.base = f\"http://localhost:{self.port}\"",
         "min_run_count": 2,
-        "name": "benchmarks.TimeRouteToRegex.time_with_param",
+        "name": "benchmarks.BenchmarkDirectoryListing.time_subdirectory_listing",
         "number": 0,
         "param_names": [],
         "params": [],
@@ -250,13 +131,13 @@
         "sample_time": 0.01,
         "type": "time",
         "unit": "seconds",
-        "version": "1390658c422b2bf33a779239d57aa4e7fb26ea0f9d56d8c351ac1bbf0c7f22ce",
+        "version": "c9dcfde31acc2d40d21e44d0439ae7a8e22cb78e8158269bde79df3461e54ca7",
         "warmup_time": -1
     },
-    "benchmarks.TimeRouteToRegex.time_with_wildcard": {
-        "code": "class TimeRouteToRegex:\n    def time_with_wildcard(self):\n        _route_to_regex(\"/api/:resource/*\")",
+    "benchmarks.BenchmarkGzipCompression.time_gzip_css": {
+        "code": "class BenchmarkGzipCompression:\n    def time_gzip_css(self):\n        req = urllib.request.Request(\n            f\"{self.base}/style.css\",\n            headers={\"Accept-Encoding\": \"gzip\"},\n        )\n        resp = urllib.request.urlopen(req)\n        resp.read()\n\n    def setup(self):\n        self.tmpdir = tempfile.mkdtemp()\n        _populate_dir(self.tmpdir)\n        self.port = _find_free_port()\n        self.proc = _start_server(self.tmpdir, self.port)\n        self.base = f\"http://localhost:{self.port}\"",
         "min_run_count": 2,
-        "name": "benchmarks.TimeRouteToRegex.time_with_wildcard",
+        "name": "benchmarks.BenchmarkGzipCompression.time_gzip_css",
         "number": 0,
         "param_names": [],
         "params": [],
@@ -265,7 +146,232 @@
         "sample_time": 0.01,
         "type": "time",
         "unit": "seconds",
-        "version": "384db2fb87fed9c6bace2f4be27edf7005dbd132bc564e612ac9762e1ae86fe7",
+        "version": "f20c36a713e0c6b9fd0a4b9f82bc57a34e08cc0de2e62c080d34849d77e46358",
+        "warmup_time": -1
+    },
+    "benchmarks.BenchmarkGzipCompression.time_gzip_html": {
+        "code": "class BenchmarkGzipCompression:\n    def time_gzip_html(self):\n        req = urllib.request.Request(\n            f\"{self.base}/about.html\",\n            headers={\"Accept-Encoding\": \"gzip\"},\n        )\n        resp = urllib.request.urlopen(req)\n        resp.read()\n\n    def setup(self):\n        self.tmpdir = tempfile.mkdtemp()\n        _populate_dir(self.tmpdir)\n        self.port = _find_free_port()\n        self.proc = _start_server(self.tmpdir, self.port)\n        self.base = f\"http://localhost:{self.port}\"",
+        "min_run_count": 2,
+        "name": "benchmarks.BenchmarkGzipCompression.time_gzip_html",
+        "number": 0,
+        "param_names": [],
+        "params": [],
+        "repeat": 0,
+        "rounds": 2,
+        "sample_time": 0.01,
+        "type": "time",
+        "unit": "seconds",
+        "version": "3babbb0d3c83feace5564177b3842fae1ff2c3fac8eb2b00b8b4b030aea42083",
+        "warmup_time": -1
+    },
+    "benchmarks.BenchmarkGzipCompression.time_gzip_js": {
+        "code": "class BenchmarkGzipCompression:\n    def time_gzip_js(self):\n        req = urllib.request.Request(\n            f\"{self.base}/script.js\",\n            headers={\"Accept-Encoding\": \"gzip\"},\n        )\n        resp = urllib.request.urlopen(req)\n        resp.read()\n\n    def setup(self):\n        self.tmpdir = tempfile.mkdtemp()\n        _populate_dir(self.tmpdir)\n        self.port = _find_free_port()\n        self.proc = _start_server(self.tmpdir, self.port)\n        self.base = f\"http://localhost:{self.port}\"",
+        "min_run_count": 2,
+        "name": "benchmarks.BenchmarkGzipCompression.time_gzip_js",
+        "number": 0,
+        "param_names": [],
+        "params": [],
+        "repeat": 0,
+        "rounds": 2,
+        "sample_time": 0.01,
+        "type": "time",
+        "unit": "seconds",
+        "version": "f56763159a7f02dca4c471d34fecc7b15de74bf0df176e4a8f6b49d1173cb1d8",
+        "warmup_time": -1
+    },
+    "benchmarks.BenchmarkKeepAlive.time_10_sequential_requests": {
+        "code": "class BenchmarkKeepAlive:\n    def time_10_sequential_requests(self):\n        conn = http.client.HTTPConnection(self.host, self.port)\n        for _ in range(10):\n            conn.request(\"GET\", \"/file-1kb.bin\")\n            resp = conn.getresponse()\n            resp.read()\n        conn.close()\n\n    def setup(self):\n        self.tmpdir = tempfile.mkdtemp()\n        _populate_dir(self.tmpdir)\n        self.port = _find_free_port()\n        self.proc = _start_server(self.tmpdir, self.port)\n        self.host = \"localhost\"",
+        "min_run_count": 2,
+        "name": "benchmarks.BenchmarkKeepAlive.time_10_sequential_requests",
+        "number": 0,
+        "param_names": [],
+        "params": [],
+        "repeat": 0,
+        "rounds": 2,
+        "sample_time": 0.01,
+        "type": "time",
+        "unit": "seconds",
+        "version": "5c5feba1491a61389962682d70f19594555952b8b435a78a903baf2a21baed0f",
+        "warmup_time": -1
+    },
+    "benchmarks.BenchmarkKeepAlive.time_50_sequential_requests": {
+        "code": "class BenchmarkKeepAlive:\n    def time_50_sequential_requests(self):\n        conn = http.client.HTTPConnection(self.host, self.port)\n        for _ in range(50):\n            conn.request(\"GET\", \"/file-1kb.bin\")\n            resp = conn.getresponse()\n            resp.read()\n        conn.close()\n\n    def setup(self):\n        self.tmpdir = tempfile.mkdtemp()\n        _populate_dir(self.tmpdir)\n        self.port = _find_free_port()\n        self.proc = _start_server(self.tmpdir, self.port)\n        self.host = \"localhost\"",
+        "min_run_count": 2,
+        "name": "benchmarks.BenchmarkKeepAlive.time_50_sequential_requests",
+        "number": 0,
+        "param_names": [],
+        "params": [],
+        "repeat": 0,
+        "rounds": 2,
+        "sample_time": 0.01,
+        "type": "time",
+        "unit": "seconds",
+        "version": "5bfb69e89b4dc37465a26d5c50f79eaeadf01614ce75b472abab982a7a9934bf",
+        "warmup_time": -1
+    },
+    "benchmarks.BenchmarkLargeDirectory.time_render_300_file_listing": {
+        "code": "class BenchmarkLargeDirectory:\n    def time_render_300_file_listing(self):\n        _fetch(f\"{self.base}/\")\n\n    def setup(self):\n        self.tmpdir = tempfile.mkdtemp()\n        for i in range(100):\n            with open(os.path.join(self.tmpdir, f\"file{i:03d}.html\"), \"w\") as f:\n                f.write(f\"<h1>File {i}</h1>\")\n            with open(os.path.join(self.tmpdir, f\"file{i:03d}.css\"), \"w\") as f:\n                f.write(f\"body {{ color: {i % 2 and 'red' or 'blue'}; }}\")\n        self.port = _find_free_port()\n        self.proc = _start_server(self.tmpdir, self.port)\n        self.base = f\"http://localhost:{self.port}\"",
+        "min_run_count": 2,
+        "name": "benchmarks.BenchmarkLargeDirectory.time_render_300_file_listing",
+        "number": 0,
+        "param_names": [],
+        "params": [],
+        "repeat": 0,
+        "rounds": 2,
+        "sample_time": 0.01,
+        "type": "time",
+        "unit": "seconds",
+        "version": "2a2e2ee46094500d6464bc9732a3d969c31fec728c7bd3eb426469681f7be7d3",
+        "warmup_time": -1
+    },
+    "benchmarks.BenchmarkLargeDirectory.time_serve_individual_file": {
+        "code": "class BenchmarkLargeDirectory:\n    def time_serve_individual_file(self):\n        _fetch(f\"{self.base}/file050.html\")\n\n    def setup(self):\n        self.tmpdir = tempfile.mkdtemp()\n        for i in range(100):\n            with open(os.path.join(self.tmpdir, f\"file{i:03d}.html\"), \"w\") as f:\n                f.write(f\"<h1>File {i}</h1>\")\n            with open(os.path.join(self.tmpdir, f\"file{i:03d}.css\"), \"w\") as f:\n                f.write(f\"body {{ color: {i % 2 and 'red' or 'blue'}; }}\")\n        self.port = _find_free_port()\n        self.proc = _start_server(self.tmpdir, self.port)\n        self.base = f\"http://localhost:{self.port}\"",
+        "min_run_count": 2,
+        "name": "benchmarks.BenchmarkLargeDirectory.time_serve_individual_file",
+        "number": 0,
+        "param_names": [],
+        "params": [],
+        "repeat": 0,
+        "rounds": 2,
+        "sample_time": 0.01,
+        "type": "time",
+        "unit": "seconds",
+        "version": "11782c96fd33737c9a0c6a0272356edeb7197a5ee6f7fcd814f33e72435bce22",
+        "warmup_time": -1
+    },
+    "benchmarks.BenchmarkStaticAssets.time_css_file": {
+        "code": "class BenchmarkStaticAssets:\n    def time_css_file(self):\n        _fetch(f\"{self.base}/style.css\")\n\n    def setup(self):\n        self.tmpdir = tempfile.mkdtemp()\n        _populate_dir(self.tmpdir)\n        self.port = _find_free_port()\n        self.proc = _start_server(self.tmpdir, self.port)\n        self.base = f\"http://localhost:{self.port}\"",
+        "min_run_count": 2,
+        "name": "benchmarks.BenchmarkStaticAssets.time_css_file",
+        "number": 0,
+        "param_names": [],
+        "params": [],
+        "repeat": 0,
+        "rounds": 2,
+        "sample_time": 0.01,
+        "type": "time",
+        "unit": "seconds",
+        "version": "9d7ca5a2e252a5f04fb69451378ce39de088814567a9b0d713c6236aaf64f3fd",
+        "warmup_time": -1
+    },
+    "benchmarks.BenchmarkStaticAssets.time_js_file": {
+        "code": "class BenchmarkStaticAssets:\n    def time_js_file(self):\n        _fetch(f\"{self.base}/script.js\")\n\n    def setup(self):\n        self.tmpdir = tempfile.mkdtemp()\n        _populate_dir(self.tmpdir)\n        self.port = _find_free_port()\n        self.proc = _start_server(self.tmpdir, self.port)\n        self.base = f\"http://localhost:{self.port}\"",
+        "min_run_count": 2,
+        "name": "benchmarks.BenchmarkStaticAssets.time_js_file",
+        "number": 0,
+        "param_names": [],
+        "params": [],
+        "repeat": 0,
+        "rounds": 2,
+        "sample_time": 0.01,
+        "type": "time",
+        "unit": "seconds",
+        "version": "03827f104daf51ed189f732381a175018ca317d45a4da111b6590a4cec80b6ac",
+        "warmup_time": -1
+    },
+    "benchmarks.BenchmarkStaticAssets.time_json_api": {
+        "code": "class BenchmarkStaticAssets:\n    def time_json_api(self):\n        _fetch(f\"{self.base}/data.json\")\n\n    def setup(self):\n        self.tmpdir = tempfile.mkdtemp()\n        _populate_dir(self.tmpdir)\n        self.port = _find_free_port()\n        self.proc = _start_server(self.tmpdir, self.port)\n        self.base = f\"http://localhost:{self.port}\"",
+        "min_run_count": 2,
+        "name": "benchmarks.BenchmarkStaticAssets.time_json_api",
+        "number": 0,
+        "param_names": [],
+        "params": [],
+        "repeat": 0,
+        "rounds": 2,
+        "sample_time": 0.01,
+        "type": "time",
+        "unit": "seconds",
+        "version": "233e6ba920090816ac64c9d58af537d3a91e9d61555ce9fb4007d59be42cdda8",
+        "warmup_time": -1
+    },
+    "benchmarks.BenchmarkStaticHTML.time_404_page": {
+        "code": "class BenchmarkStaticHTML:\n    def time_404_page(self):\n        try:\n            _fetch(f\"{self.base}/nonexistent.html\")\n        except urllib.error.HTTPError:\n            pass\n\n    def setup(self):\n        self.tmpdir = tempfile.mkdtemp()\n        _populate_dir(self.tmpdir)\n        self.port = _find_free_port()\n        self.proc = _start_server(self.tmpdir, self.port)\n        self.base = f\"http://localhost:{self.port}\"",
+        "min_run_count": 2,
+        "name": "benchmarks.BenchmarkStaticHTML.time_404_page",
+        "number": 0,
+        "param_names": [],
+        "params": [],
+        "repeat": 0,
+        "rounds": 2,
+        "sample_time": 0.01,
+        "type": "time",
+        "unit": "seconds",
+        "version": "7e021f4e390706e9858772348ce62387ba2cc2a0b5ae7845130976b3699b12b7",
+        "warmup_time": -1
+    },
+    "benchmarks.BenchmarkStaticHTML.time_about_page": {
+        "code": "class BenchmarkStaticHTML:\n    def time_about_page(self):\n        _fetch(f\"{self.base}/about.html\")\n\n    def setup(self):\n        self.tmpdir = tempfile.mkdtemp()\n        _populate_dir(self.tmpdir)\n        self.port = _find_free_port()\n        self.proc = _start_server(self.tmpdir, self.port)\n        self.base = f\"http://localhost:{self.port}\"",
+        "min_run_count": 2,
+        "name": "benchmarks.BenchmarkStaticHTML.time_about_page",
+        "number": 0,
+        "param_names": [],
+        "params": [],
+        "repeat": 0,
+        "rounds": 2,
+        "sample_time": 0.01,
+        "type": "time",
+        "unit": "seconds",
+        "version": "7d1c7d915212613032085684be58d77240be0c5ad4e034dd71591b33a87e80dd",
+        "warmup_time": -1
+    },
+    "benchmarks.BenchmarkStaticHTML.time_index_page": {
+        "code": "class BenchmarkStaticHTML:\n    def time_index_page(self):\n        _fetch(f\"{self.base}/index.html\")\n\n    def setup(self):\n        self.tmpdir = tempfile.mkdtemp()\n        _populate_dir(self.tmpdir)\n        self.port = _find_free_port()\n        self.proc = _start_server(self.tmpdir, self.port)\n        self.base = f\"http://localhost:{self.port}\"",
+        "min_run_count": 2,
+        "name": "benchmarks.BenchmarkStaticHTML.time_index_page",
+        "number": 0,
+        "param_names": [],
+        "params": [],
+        "repeat": 0,
+        "rounds": 2,
+        "sample_time": 0.01,
+        "type": "time",
+        "unit": "seconds",
+        "version": "3a8fd9435af9b5f443798fcb5bd3322cdd063ccd634bba647c48df5e72111fb6",
+        "warmup_time": -1
+    },
+    "benchmarks.BenchmarkTTFB.time_ttfb_404": {
+        "code": "class BenchmarkTTFB:\n    def time_ttfb_404(self):\n        start = time.perf_counter()\n        try:\n            resp = urllib.request.urlopen(f\"{self.base}/nonexistent.html\")\n            resp.read(1)\n        except urllib.error.HTTPError:\n            pass\n        return time.perf_counter() - start\n\n    def setup(self):\n        self.tmpdir = tempfile.mkdtemp()\n        _populate_dir(self.tmpdir)\n        self.port = _find_free_port()\n        self.proc = _start_server(self.tmpdir, self.port)\n        self.base = f\"http://localhost:{self.port}\"",
+        "min_run_count": 2,
+        "name": "benchmarks.BenchmarkTTFB.time_ttfb_404",
+        "number": 0,
+        "param_names": [],
+        "params": [],
+        "repeat": 0,
+        "rounds": 2,
+        "sample_time": 0.01,
+        "type": "time",
+        "unit": "seconds",
+        "version": "19c67f0e3680d999a337c5f77e3be1becfdee4d4655257b82ae7d3c09c2ac901",
+        "warmup_time": -1
+    },
+    "benchmarks.BenchmarkTTFB.time_ttfb_binary": {
+        "code": "class BenchmarkTTFB:\n    def time_ttfb_binary(self):\n        start = time.perf_counter()\n        resp = urllib.request.urlopen(f\"{self.base}/file-1kb.bin\")\n        resp.read(1)\n        return time.perf_counter() - start\n\n    def setup(self):\n        self.tmpdir = tempfile.mkdtemp()\n        _populate_dir(self.tmpdir)\n        self.port = _find_free_port()\n        self.proc = _start_server(self.tmpdir, self.port)\n        self.base = f\"http://localhost:{self.port}\"",
+        "min_run_count": 2,
+        "name": "benchmarks.BenchmarkTTFB.time_ttfb_binary",
+        "number": 0,
+        "param_names": [],
+        "params": [],
+        "repeat": 0,
+        "rounds": 2,
+        "sample_time": 0.01,
+        "type": "time",
+        "unit": "seconds",
+        "version": "8f0c48a51e0d7906227b70e33766d92fb4bea5181577e2ad4b24218b32526dd5",
+        "warmup_time": -1
+    },
+    "benchmarks.BenchmarkTTFB.time_ttfb_html": {
+        "code": "class BenchmarkTTFB:\n    def time_ttfb_html(self):\n        start = time.perf_counter()\n        resp = urllib.request.urlopen(f\"{self.base}/index.html\")\n        resp.read(1)\n        return time.perf_counter() - start\n\n    def setup(self):\n        self.tmpdir = tempfile.mkdtemp()\n        _populate_dir(self.tmpdir)\n        self.port = _find_free_port()\n        self.proc = _start_server(self.tmpdir, self.port)\n        self.base = f\"http://localhost:{self.port}\"",
+        "min_run_count": 2,
+        "name": "benchmarks.BenchmarkTTFB.time_ttfb_html",
+        "number": 0,
+        "param_names": [],
+        "params": [],
+        "repeat": 0,
+        "rounds": 2,
+        "sample_time": 0.01,
+        "type": "time",
+        "unit": "seconds",
+        "version": "9fdb2369c15fc0710ae2721ea774077eb1b1d4daccb488a3a1088ca26a5cfbc1",
         "warmup_time": -1
     },
     "version": 2
