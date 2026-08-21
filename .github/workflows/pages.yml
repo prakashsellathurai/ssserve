@@ -20,29 +20,31 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: gh-pages
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          python-version: '3.12'
 
       - name: Install uv
         run: pip install uv
 
-      - name: Download benchmark results
-        uses: actions/download-artifact@v4
-        with:
-          name: asv-results
-          path: .
-          github-token: ${{ github.token }}
-          run-id: ${{ github.event.workflow_run.id }}
-
       - name: Install dependencies
         run: uv sync --group dev
 
+      - name: Download benchmark results
+        uses: actions/download-artifact@v4
+        with:
+          name: asv-results-${{ github.event.workflow_run.id }}
+          path: .asv
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+
       - name: Publish to gh-pages
         run: |
-          git fetch origin gh-pages
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           uv run asv gh-pages --rewrite
+
+      - name: Push to gh-pages
+        run: git push origin gh-pages

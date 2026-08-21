@@ -7,6 +7,7 @@ import socketserver
 import sys
 import time
 from http.server import HTTPServer
+from socketserver import ThreadingMixIn
 
 import click
 
@@ -17,21 +18,27 @@ from ssserve.livereload import LiveReload
 from ssserve.network import Address, find_free_port, get_lan_ip, parse_listen
 
 
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+    request_queue_size = 128
+
+
 def _create_server(
     addr: Address,
     handler_class: type,
     ssl_cert: str | None = None,
     ssl_key: str | None = None,
     ssl_pass: str | None = None,
-) -> HTTPServer:
+) -> ThreadingHTTPServer:
     if addr.scheme == "unix":
         if os.path.exists(addr.path):
             os.unlink(addr.path)
-        server = HTTPServer(addr.path, handler_class)
+        server = ThreadingHTTPServer(addr.path, handler_class)
         server.server_address = addr.path
     else:
         host = addr.host or "0.0.0.0"
-        server = HTTPServer((host, addr.port), handler_class)
+        server = ThreadingHTTPServer((host, addr.port), handler_class)
         server.server_address = (host, addr.port)
 
     if ssl_cert and ssl_key:

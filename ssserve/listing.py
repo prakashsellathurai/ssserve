@@ -77,6 +77,7 @@ def render_listing(path: str, base_dir: str, entries: list[os.DirEntry]) -> str:
         if is_dir:
             icon = "&#128193;"
             size_display = "-"
+            date_display = "-"
             cls = "folder"
         else:
             icon = "&#128196;"
@@ -88,12 +89,6 @@ def render_listing(path: str, base_dir: str, entries: list[os.DirEntry]) -> str:
                 size_display = "?"
                 date_display = "-"
             cls = "file"
-
-        try:
-            stat = entry.stat()
-            date_display = format_date(stat.st_mtime)
-        except OSError:
-            date_display = "-"
 
         dir_slash = "/" if is_dir else ""
         rows.append(
