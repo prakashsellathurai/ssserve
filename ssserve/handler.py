@@ -14,9 +14,14 @@ from fnmatch import fnmatch
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 
+from ssserve.cache import LockFreeCache
 from ssserve.config import Config
 from ssserve.listing import render_listing
 from ssserve.livereload import LiveReload
+
+_etag_cache: LockFreeCache[str] = LockFreeCache(max_size=2048, ttl=300.0)
+_gzip_cache: LockFreeCache[bytes] = LockFreeCache(max_size=1024, ttl=60.0)
+_file_cache: LockFreeCache[bytes] = LockFreeCache(max_size=512, ttl=30.0)
 
 
 def _route_to_regex(pattern: str) -> re.Pattern:
@@ -74,6 +79,49 @@ def _parse_byte_range(range_header: str, file_size: int) -> tuple[int, int] | No
             return None
         return start, end
     except ValueError:
+        return None
+
+
+def _compute_etag(fs_path: str, mtime: float, size: int) -> str | None:
+    cache_key = f"{fs_path}:{mtime}:{size}"
+    cached = _etag_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    hasher = hashlib.sha256()
+    try:
+        with open(fs_path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                hasher.update(chunk)
+        etag_val = f'"{hasher.hexdigest()}"'
+        _etag_cache.set(cache_key, etag_val)
+        return etag_val
+    except OSError:
+        return None
+
+
+def _get_gzip_data(data: bytes, cache_key: str) -> bytes | None:
+    cached = _gzip_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    try:
+        compressed = gzip.compress(data)
+        _gzip_cache.set(cache_key, compressed)
+        return compressed
+    except OSError:
+        return None
+
+
+def _get_file_content(fs_path: str, mtime: float, size: int) -> bytes | None:
+    cache_key = f"{fs_path}:{mtime}:{size}"
+    cached = _file_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    try:
+        with open(fs_path, "rb") as f:
+            content = f.read()
+        _file_cache.set(cache_key, content)
+        return content
+    except OSError:
         return None
 
 
@@ -277,14 +325,7 @@ class ServeHandler(BaseHTTPRequestHandler):
         mime = self._get_mime(fs_path)
         etag_val = None
         if self.config.etag:
-            hasher = hashlib.sha256()
-            try:
-                with open(fs_path, "rb") as f:
-                    for chunk in iter(lambda: f.read(65536), b""):
-                        hasher.update(chunk)
-                etag_val = f'"{hasher.hexdigest()}"'
-            except OSError:
-                etag_val = None
+            etag_val = _compute_etag(fs_path, mtime, file_size)
 
         if byte_range:
             status = HTTPStatus.PARTIAL_CONTENT
@@ -320,14 +361,15 @@ class ServeHandler(BaseHTTPRequestHandler):
 
         _lr_html: bytes | None = None
         if self.live_reload and not byte_range and mime.startswith("text/html"):
-            try:
-                with open(fs_path, "rb") as f:
+            raw_content = _get_file_content(fs_path, mtime, file_size)
+            if raw_content is not None:
+                try:
                     _lr_html = self.live_reload.inject_script(
-                        f.read().decode("utf-8"), self.live_reload.version
+                        raw_content.decode("utf-8"), self.live_reload.version
                     ).encode("utf-8")
-                content_length = len(_lr_html)
-            except (OSError, UnicodeDecodeError):
-                _lr_html = None
+                    content_length = len(_lr_html)
+                except UnicodeDecodeError:
+                    _lr_html = None
 
         accept_encoding = self.headers.get("Accept-Encoding", "")
         use_gzip = (
@@ -337,12 +379,16 @@ class ServeHandler(BaseHTTPRequestHandler):
 
         gzipped_data = None
         if use_gzip and not byte_range:
-            try:
-                raw = _lr_html if _lr_html is not None else open(fs_path, "rb").read()
-                gzipped_data = gzip.compress(raw)
+            if _lr_html is not None:
+                gzip_key = f"lr:{fs_path}:{mtime}:{len(_lr_html)}"
+                gzipped_data = _get_gzip_data(_lr_html, gzip_key)
+            else:
+                raw_content = _get_file_content(fs_path, mtime, file_size)
+                if raw_content is not None:
+                    gzip_key = f"raw:{fs_path}:{mtime}:{file_size}"
+                    gzipped_data = _get_gzip_data(raw_content, gzip_key)
+            if gzipped_data is not None:
                 content_length = len(gzipped_data)
-            except OSError:
-                gzipped_data = None
 
         self.send_response(status)
         self.send_header("Content-Type", mime)
@@ -389,8 +435,12 @@ class ServeHandler(BaseHTTPRequestHandler):
             elif _lr_html is not None:
                 self.wfile.write(_lr_html)
             else:
-                with open(fs_path, "rb") as f:
-                    self.copyfile(f, self.wfile)
+                raw_content = _get_file_content(fs_path, mtime, file_size)
+                if raw_content is not None:
+                    self.wfile.write(raw_content)
+                else:
+                    with open(fs_path, "rb") as f:
+                        self.copyfile(f, self.wfile)
         except OSError:
             pass
 
