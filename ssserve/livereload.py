@@ -20,15 +20,13 @@ class LiveReload:
         self.root_dir = os.path.abspath(root_dir)
         self.interval = interval
         self._version = 0
-        self._lock = threading.Lock()
         self._snapshot: dict[str, float] = {}
-        self._running = False
+        self._running = threading.Event()
         self._thread: threading.Thread | None = None
 
     @property
     def version(self) -> int:
-        with self._lock:
-            return self._version
+        return self._version
 
     def _walk(self) -> dict[str, float]:
         snap: dict[str, float] = {}
@@ -49,23 +47,22 @@ class LiveReload:
 
     def _watch(self) -> None:
         self._snapshot = self._walk()
-        while self._running:
+        while self._running.is_set():
             time.sleep(self.interval)
             current = self._walk()
             if current != self._snapshot:
                 self._snapshot = current
-                with self._lock:
-                    self._version += 1
+                self._version += 1
 
     def start(self) -> None:
-        if self._running:
+        if self._running.is_set():
             return
-        self._running = True
+        self._running.set()
         self._thread = threading.Thread(target=self._watch, daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
-        self._running = False
+        self._running.clear()
         if self._thread:
             self._thread.join(timeout=5)
             self._thread = None
