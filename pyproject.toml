@@ -11,7 +11,7 @@ license = "MIT"
 ssserve = "ssserve.cli:main"
 
 [build-system]
-requires = ["setuptools>=64"]
+requires = ["setuptools>=83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
@@ -22,5 +22,5 @@ dev = [
     "pytest>=8",
     "psutil>=6",
     "asv>=0.6.5",
-    "setuptools>=82.0.1",
+    "setuptools>=83.0.0",
 ]
