@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import gzip
-import hashlib
 import html
 import io
+import json
 import mimetypes
 import os
 import re
@@ -13,27 +12,19 @@ from email.utils import formatdate, parsedate
 from fnmatch import fnmatch
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
+from urllib.parse import parse_qs, urlparse
 
 from ssserve.cache import LockFreeCache
 from ssserve.config import Config
+from ssserve.fastops import etag as fast_etag
+from ssserve.fastops import fast_gzip
 from ssserve.listing import render_listing
 from ssserve.livereload import LiveReload
 
 _etag_cache: LockFreeCache[str] = LockFreeCache(max_size=2048, ttl=300.0)
 _gzip_cache: LockFreeCache[bytes] = LockFreeCache(max_size=1024, ttl=60.0)
 _file_cache: LockFreeCache[bytes] = LockFreeCache(max_size=512, ttl=30.0)
-
-
-def _route_to_regex(pattern: str) -> re.Pattern:
-    parts = []
-    for segment in pattern.split("/"):
-        if segment.startswith(":"):
-            parts.append(f"(?P<{segment[1:]}>[^/]+)")
-        elif "*" in segment:
-            parts.append(re.escape(segment).replace(r"\*\*", ".*").replace(r"\*", "[^/]*"))
-        else:
-            parts.append(re.escape(segment))
-    return re.compile(f"^{'/'.join(parts)}$")
+_error_cache: LockFreeCache[bytes] = LockFreeCache(max_size=64, ttl=60.0)
 
 
 def _apply_segments(template: str, groups: dict[str, str]) -> str:
@@ -87,16 +78,9 @@ def _compute_etag(fs_path: str, mtime: float, size: int) -> str | None:
     cached = _etag_cache.get(cache_key)
     if cached is not None:
         return cached
-    hasher = hashlib.sha256()
-    try:
-        with open(fs_path, "rb") as f:
-            for chunk in iter(lambda: f.read(65536), b""):
-                hasher.update(chunk)
-        etag_val = f'"{hasher.hexdigest()}"'
-        _etag_cache.set(cache_key, etag_val)
-        return etag_val
-    except OSError:
-        return None
+    etag_val = fast_etag(mtime, size)
+    _etag_cache.set(cache_key, etag_val)
+    return etag_val
 
 
 def _get_gzip_data(data: bytes, cache_key: str) -> bytes | None:
@@ -104,7 +88,7 @@ def _get_gzip_data(data: bytes, cache_key: str) -> bytes | None:
     if cached is not None:
         return cached
     try:
-        compressed = gzip.compress(data)
+        compressed = fast_gzip(data)
         _gzip_cache.set(cache_key, compressed)
         return compressed
     except OSError:
@@ -159,18 +143,34 @@ class ServeHandler(BaseHTTPRequestHandler):
 
     def _send_error_page(self, status: int, message: str = "") -> None:
         status_code = int(status)
-        error_page = os.path.join(self.root_dir, f"{status_code}.html")
-        content = f"<h1>{status_code} {HTTPStatus(status_code).phrase}</h1>"
-        if os.path.isfile(error_page):
-            with open(error_page, "rb") as f:
-                body = f.read()
-            content = body.decode("utf-8", errors="replace")
+        cache_key = f"{status_code}:{message}"
+        cached = _error_cache.get(cache_key)
+        if cached is not None:
+            body_bytes = cached
         else:
-            content = f"<!doctype html><html><head><meta charset='utf-8'><title>{status_code}</title><style>body{{font-family:sans-serif;padding:40px;text-align:center}}h1{{font-weight:400;color:#333}}p{{color:#666}}</style></head><body><h1>{status_code}</h1><p>{html.escape(message)}</p></body></html>"
-            if status_code == 404:
-                content = f"<!doctype html><html><head><meta charset='utf-8'><title>404 Not Found</title><style>body{{font-family:sans-serif;padding:40px;text-align:center}}h1{{font-weight:400;color:#333}}</style></head><body><h1>404</h1><p>Not Found</p></body></html>"
+            error_page = os.path.join(self.root_dir, f"{status_code}.html")
+            if os.path.isfile(error_page):
+                with open(error_page, "rb") as f:
+                    body_bytes = f.read()
+            elif status_code == 404:
+                body_bytes = (
+                    "<!doctype html><html><head><meta charset='utf-8'>"
+                    "<title>404 Not Found</title>"
+                    "<style>body{font-family:sans-serif;padding:40px;text-align:center}"
+                    "h1{font-weight:400;color:#333}</style></head>"
+                    "<body><h1>404</h1><p>Not Found</p></body></html>"
+                ).encode("utf-8")
+            else:
+                body_bytes = (
+                    f"<!doctype html><html><head><meta charset='utf-8'>"
+                    f"<title>{status_code}</title>"
+                    f"<style>body{{font-family:sans-serif;padding:40px;text-align:center}}"
+                    f"h1{{font-weight:400;color:#333}}p{{color:#666}}</style></head>"
+                    f"<body><h1>{status_code}</h1>"
+                    f"<p>{html.escape(message)}</p></body></html>"
+                ).encode("utf-8")
+            _error_cache.set(cache_key, body_bytes)
 
-        body_bytes = content.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body_bytes)))
@@ -241,12 +241,8 @@ class ServeHandler(BaseHTTPRequestHandler):
         if fs_path:
             return fs_path
         if self.config.clean_urls is not False:
-            html_path = url_path.rstrip("/") + ".html"
-            if url_path == "/":
-                html_path = "/index.html"
-            fs_path = self._resolve_path(html_path)
-            if fs_path and os.path.isfile(fs_path):
-                return fs_path
+            html_path = url_path.rstrip("/") + ".html" if url_path != "/" else "/index.html"
+            return self._resolve_path(html_path)
         return None
 
     def _check_trailing_slash(self, url_path: str) -> str | None:
@@ -296,8 +292,6 @@ class ServeHandler(BaseHTTPRequestHandler):
         return _match_glob_list(name, self.config.unlisted)
 
     def _handle_lr_check(self) -> None:
-        import json
-        from urllib.parse import parse_qs, urlparse
         params = parse_qs(urlparse(self.path).query)
         client_version = int(params.get("v", [0])[0])
         current = self.live_reload.version
@@ -357,36 +351,42 @@ class ServeHandler(BaseHTTPRequestHandler):
                     except (TypeError, OSError):
                         pass
 
-        _lr_html: bytes | None = None
-        if self.live_reload and not byte_range and mime.startswith("text/html"):
-            raw_content = _get_file_content(fs_path, mtime, file_size)
-            if raw_content is not None:
-                try:
-                    _lr_html = self.live_reload.inject_script(
-                        raw_content.decode("utf-8"), self.live_reload.version
-                    ).encode("utf-8")
-                    content_length = len(_lr_html)
-                except UnicodeDecodeError:
-                    _lr_html = None
-
         accept_encoding = self.headers.get("Accept-Encoding", "")
         use_gzip = (
             not self.no_compression
             and "gzip" in accept_encoding
+            and not byte_range
+        )
+        use_lr = (
+            self.live_reload
+            and not byte_range
+            and mime.startswith("text/html")
         )
 
-        gzipped_data = None
-        if use_gzip and not byte_range:
-            if _lr_html is not None:
-                gzip_key = f"lr:{fs_path}:{mtime}:{len(_lr_html)}"
-                gzipped_data = _get_gzip_data(_lr_html, gzip_key)
-            else:
-                raw_content = _get_file_content(fs_path, mtime, file_size)
-                if raw_content is not None:
-                    gzip_key = f"raw:{fs_path}:{mtime}:{file_size}"
-                    gzipped_data = _get_gzip_data(raw_content, gzip_key)
-            if gzipped_data is not None:
-                content_length = len(gzipped_data)
+        _lr_html: bytes | None = None
+        gzipped_data: bytes | None = None
+        raw_content: bytes | None = None
+
+        if use_lr or use_gzip:
+            raw_content = _get_file_content(fs_path, mtime, file_size)
+
+        if use_lr and raw_content is not None:
+            try:
+                _lr_html = self.live_reload.inject_script(
+                    raw_content.decode("utf-8"), self.live_reload.version
+                ).encode("utf-8")
+                content_length = len(_lr_html)
+            except UnicodeDecodeError:
+                _lr_html = None
+
+        if use_gzip:
+            source = _lr_html if _lr_html is not None else raw_content
+            if source is not None:
+                prefix = "lr:" if _lr_html is not None else "raw:"
+                gzip_key = f"{prefix}{fs_path}:{mtime}:{len(source)}"
+                gzipped_data = _get_gzip_data(source, gzip_key)
+                if gzipped_data is not None:
+                    content_length = len(gzipped_data)
 
         self.send_response(status)
         self.send_header("Content-Type", mime)
@@ -433,7 +433,8 @@ class ServeHandler(BaseHTTPRequestHandler):
             elif _lr_html is not None:
                 self.wfile.write(_lr_html)
             else:
-                raw_content = _get_file_content(fs_path, mtime, file_size)
+                if raw_content is None:
+                    raw_content = _get_file_content(fs_path, mtime, file_size)
                 if raw_content is not None:
                     self.wfile.write(raw_content)
                 else:
