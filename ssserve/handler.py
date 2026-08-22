@@ -3,7 +3,6 @@ from __future__ import annotations
 import html
 import io
 import json
-import mimetypes
 import os
 import re
 import time
@@ -18,13 +17,14 @@ from ssserve.cache import LockFreeCache
 from ssserve.config import Config
 from ssserve.fastops import etag as fast_etag
 from ssserve.fastops import fast_gzip
+from ssserve.fastops import guess_type as fast_guess_type
 from ssserve.listing import render_listing
 from ssserve.livereload import LiveReload
 
-_etag_cache: LockFreeCache[str] = LockFreeCache(max_size=2048, ttl=300.0)
-_gzip_cache: LockFreeCache[bytes] = LockFreeCache(max_size=1024, ttl=60.0)
-_file_cache: LockFreeCache[bytes] = LockFreeCache(max_size=512, ttl=30.0)
-_error_cache: LockFreeCache[bytes] = LockFreeCache(max_size=64, ttl=60.0)
+_etag_cache: LockFreeCache = LockFreeCache(max_size=2048, ttl=300.0)
+_gzip_cache: LockFreeCache = LockFreeCache(max_size=1024, ttl=60.0)
+_file_cache: LockFreeCache = LockFreeCache(max_size=512, ttl=30.0)
+_error_cache: LockFreeCache = LockFreeCache(max_size=64, ttl=60.0)
 
 
 def _apply_segments(template: str, groups: dict[str, str]) -> str:
@@ -190,8 +190,7 @@ class ServeHandler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Credentials", "true")
 
     def _get_mime(self, path: str) -> str:
-        mime, _ = mimetypes.guess_type(path)
-        return mime or "application/octet-stream"
+        return fast_guess_type(path)
 
     def _normalize_path(self, url_path: str) -> str:
         parsed = urllib.parse.urlsplit(url_path)
