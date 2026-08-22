@@ -23,4 +23,5 @@ dev = [
     "psutil>=6",
     "asv>=0.6.5",
     "setuptools>=83.0.0",
+    "build",
 ]

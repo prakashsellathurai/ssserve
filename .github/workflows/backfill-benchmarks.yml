@@ -1,0 +1,63 @@
+name: Backfill Benchmarks
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_range:
+        description: "Commit range (e.g., abc123..def456). Leave empty for all commits"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-days: 6
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      - name: Configure ASV machine
+        run: uv run asv machine --yes
+
+      - name: Validate benchmarks are well-formed
+        run: uv run asv check --python=same
+
+      - name: Run benchmarks (backfill)
+        run: |
+          RANGE="${{ inputs.commit_range }}"
+          if [ -z "$RANGE" ]; then
+            FIRST=$(git rev-list --max-parents=0 HEAD)
+            RANGE="${FIRST}..HEAD"
+          fi
+          echo "Running benchmarks for range: $RANGE"
+
+          git branch -f main HEAD 2>/dev/null || true
+          uv run asv run --python=same --show-stderr "$RANGE"
+
+      - name: Publish benchmark HTML
+        run: uv run asv publish
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: asv-results-${{ github.run_id }}
+          path: |
+            .asv/results
+            .asv/html
+          retention-days: 90

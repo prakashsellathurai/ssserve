@@ -363,6 +363,7 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "asv" },
+    { name = "build" },
     { name = "psutil" },
     { name = "pytest" },
     { name = "setuptools" },
@@ -374,6 +375,7 @@ requires-dist = [{ name = "click", specifier = ">=8.0" }]
 [package.metadata.requires-dev]
 dev = [
     { name = "asv", specifier = ">=0.6.5" },
+    { name = "build" },
     { name = "psutil", specifier = ">=6" },
     { name = "pytest", specifier = ">=8" },
     { name = "setuptools", specifier = ">=83.0.0" },
