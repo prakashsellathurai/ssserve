@@ -15,7 +15,6 @@ permissions:
 jobs:
   backfill:
     runs-on: ubuntu-latest
-    timeout-days: 6
 
     steps:
       - uses: actions/checkout@v4
