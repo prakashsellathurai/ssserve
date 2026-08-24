@@ -4,10 +4,12 @@ import cProfile
 import json
 import os
 import pstats
+import shutil
 import socket
 import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -40,6 +42,11 @@ def _populate_test_dir(base: Path) -> None:
     dl = base / "downloads"
     dl.mkdir()
     (dl / "readme.txt").write_text("hello world")
+
+    many = base / "many-files"
+    many.mkdir()
+    for i in range(100):
+        (many / f"file-{i:03d}.txt").write_text(f"file {i}")
 
 
 def _wait_for_server(port: int, proc: subprocess.Popen, timeout: float = 15.0) -> None:
@@ -129,10 +136,21 @@ def _find_server_pid(port: int) -> int | None:
     return None
 
 
+def _warm_up(url: str, requests: int = 5) -> None:
+    for _ in range(requests):
+        try:
+            resp = urllib.request.urlopen(f"{url}/")
+            resp.read()
+        except Exception:
+            pass
+
+
 @pytest.fixture
 def profiled_server(test_dir: Path, request) -> tuple[str, Path]:
     proc, port = _start_server(test_dir)
     url = f"http://localhost:{port}"
+
+    _warm_up(url)
 
     profiler = cProfile.Profile()
     profiler.enable()
@@ -154,7 +172,15 @@ def memray_server(test_dir: Path, request) -> tuple[str, Path]:
     proc, port = _start_server(test_dir)
     url = f"http://localhost:{port}"
 
-    import memray
+    try:
+        import memray
+    except ImportError:
+        pytest.skip("memray not installed")
+        yield url, PROFILES_DIR
+        _stop_server(proc)
+        return
+
+    _warm_up(url)
 
     PROFILES_DIR.mkdir(parents=True, exist_ok=True)
     out_path = PROFILES_DIR / f"{request.node.name}.bin"
@@ -173,14 +199,25 @@ def sampled_server(test_dir: Path, request) -> tuple[str, Path]:
     proc, port = _start_server(test_dir)
     url = f"http://localhost:{port}"
 
+    if not shutil.which("py-spy"):
+        pytest.skip("py-spy not installed")
+        yield url, PROFILES_DIR
+        _stop_server(proc)
+        return
+
+    _warm_up(url)
+
     PROFILES_DIR.mkdir(parents=True, exist_ok=True)
     svg_path = PROFILES_DIR / f"{request.node.name}.svg"
     pid = _find_server_pid(port)
 
+    duration = getattr(request, "param", {}).get("duration", 5)
+    rate = getattr(request, "param", {}).get("rate", 100)
+
     if pid:
         record_proc = subprocess.Popen(
             ["py-spy", "record", "-o", str(svg_path), "-p", str(pid),
-             "--duration", "3", "--rate", "100"],
+             "--duration", str(duration), "--rate", str(rate)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -191,7 +228,7 @@ def sampled_server(test_dir: Path, request) -> tuple[str, Path]:
 
     if record_proc:
         try:
-            record_proc.wait(timeout=10)
+            record_proc.wait(timeout=15)
         except subprocess.TimeoutExpired:
             record_proc.terminate()
             record_proc.wait(timeout=5)
