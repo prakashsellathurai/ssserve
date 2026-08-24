@@ -22,6 +22,12 @@ name = "ssserve._fastops"
 sources = ["ssserve/_fastops.c"]
 libraries = ["z"]
 
+[tool.pytest.ini_options]
+markers = [
+    "profile: profiling tests (CPU, memory, sampling)",
+]
+testpaths = ["tests"]
+
 [dependency-groups]
 dev = [
     "pytest>=8",
@@ -29,4 +35,6 @@ dev = [
     "asv>=0.6.5",
     "setuptools>=83.0.0",
     "build",
+    "memray>=1.12",
+    "py-spy>=0.3.14",
 ]

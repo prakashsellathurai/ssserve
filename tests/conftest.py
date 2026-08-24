@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import cProfile
 import json
 import os
+import pstats
 import socket
 import subprocess
 import sys
@@ -9,6 +11,8 @@ import time
 from pathlib import Path
 
 import pytest
+
+PROFILES_DIR = Path(__file__).resolve().parent / "profiles"
 
 
 def find_free_port() -> int:
@@ -114,3 +118,85 @@ def server_factory() -> type:
             _stop_server(p)
         except Exception:
             pass
+
+
+def _find_server_pid(port: int) -> int | None:
+    import psutil
+
+    for conn in psutil.net_connections():
+        if hasattr(conn.laddr, "port") and conn.laddr.port == port and conn.status == "LISTEN":
+            return conn.pid
+    return None
+
+
+@pytest.fixture
+def profiled_server(test_dir: Path, request) -> tuple[str, Path]:
+    proc, port = _start_server(test_dir)
+    url = f"http://localhost:{port}"
+
+    profiler = cProfile.Profile()
+    profiler.enable()
+
+    yield url, PROFILES_DIR
+
+    profiler.disable()
+    PROFILES_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = PROFILES_DIR / f"{request.node.name}.prof"
+    profiler.dump_stats(str(out_path))
+    stats = pstats.Stats(str(out_path))
+    print(f"\n  CPU profile saved: {out_path}")
+    stats.print_stats(20)
+    _stop_server(proc)
+
+
+@pytest.fixture
+def memray_server(test_dir: Path, request) -> tuple[str, Path]:
+    proc, port = _start_server(test_dir)
+    url = f"http://localhost:{port}"
+
+    import memray
+
+    PROFILES_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = PROFILES_DIR / f"{request.node.name}.bin"
+    out_path.unlink(missing_ok=True)
+    tracker = memray.Tracker(str(out_path))
+
+    with tracker:
+        yield url, PROFILES_DIR
+
+    print(f"\n  Memory profile saved: {out_path}")
+    _stop_server(proc)
+
+
+@pytest.fixture
+def sampled_server(test_dir: Path, request) -> tuple[str, Path]:
+    proc, port = _start_server(test_dir)
+    url = f"http://localhost:{port}"
+
+    PROFILES_DIR.mkdir(parents=True, exist_ok=True)
+    svg_path = PROFILES_DIR / f"{request.node.name}.svg"
+    pid = _find_server_pid(port)
+
+    if pid:
+        record_proc = subprocess.Popen(
+            ["py-spy", "record", "-o", str(svg_path), "-p", str(pid),
+             "--duration", "3", "--rate", "100"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    else:
+        record_proc = None
+
+    yield url, PROFILES_DIR
+
+    if record_proc:
+        try:
+            record_proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            record_proc.terminate()
+            record_proc.wait(timeout=5)
+        if svg_path.exists():
+            print(f"\n  Sampling profile saved: {svg_path}")
+        else:
+            print(f"\n  Sampling profile: no stacks collected (process too short-lived)")
+    _stop_server(proc)
