@@ -199,11 +199,16 @@ def sampled_server(test_dir: Path, request) -> tuple[str, Path]:
     proc, port = _start_server(test_dir)
     url = f"http://localhost:{port}"
 
-    if not shutil.which("py-spy"):
-        pytest.skip("py-spy not installed")
-        yield url, PROFILES_DIR
-        _stop_server(proc)
-        return
+    py_spy = shutil.which("py-spy")
+    if not py_spy:
+        venv_pyspy = Path(__file__).resolve().parent.parent / ".venv" / "bin" / "py-spy"
+        if venv_pyspy.exists():
+            py_spy = str(venv_pyspy)
+        else:
+            pytest.skip("py-spy not installed")
+            yield url, PROFILES_DIR
+            _stop_server(proc)
+            return
 
     _warm_up(url)
 
@@ -211,24 +216,27 @@ def sampled_server(test_dir: Path, request) -> tuple[str, Path]:
     svg_path = PROFILES_DIR / f"{request.node.name}.svg"
     pid = _find_server_pid(port)
 
-    duration = getattr(request, "param", {}).get("duration", 5)
-    rate = getattr(request, "param", {}).get("rate", 100)
+    duration = getattr(request, "param", {}).get("duration", 10)
+    rate = getattr(request, "param", {}).get("rate", 200)
 
     if pid:
         record_proc = subprocess.Popen(
-            ["py-spy", "record", "-o", str(svg_path), "-p", str(pid),
-             "--duration", str(duration), "--rate", str(rate)],
+            [py_spy, "record", "-o", str(svg_path), "-p", str(pid),
+             "--duration", str(duration), "--rate", str(rate),
+             "--format", "speedscope"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
     else:
         record_proc = None
 
+    time.sleep(0.3)
+
     yield url, PROFILES_DIR
 
     if record_proc:
         try:
-            record_proc.wait(timeout=15)
+            record_proc.wait(timeout=duration + 15)
         except subprocess.TimeoutExpired:
             record_proc.terminate()
             record_proc.wait(timeout=5)
