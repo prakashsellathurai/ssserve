@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import cProfile
+import atexit
 import os
+import pstats
+import signal
 import socket
 import ssl
 import socketserver
@@ -10,6 +14,9 @@ from http.server import HTTPServer
 from socketserver import ThreadingMixIn
 
 import click
+
+_profiler: cProfile.Profile | None = None
+_profile_path: str | None = None
 
 from ssserve import __version__
 from ssserve.config import load_config
@@ -22,6 +29,17 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
     request_queue_size = 128
+
+
+def _dump_profile() -> None:
+    if _profiler and _profile_path:
+        _profiler.disable()
+        _profiler.dump_stats(_profile_path)
+
+
+def _handle_sigterm(signum, frame):
+    _dump_profile()
+    os._exit(0)
 
 
 def _create_server(
@@ -112,6 +130,7 @@ def _print_startup(
 @click.option("--ssl-pass", type=click.Path(exists=True, dir_okay=False), help="SSL/TLS passphrase file")
 @click.option("--no-port-switching", is_flag=True, help="Don't switch to another port when port is taken")
 @click.option("-r", "--live-reload", is_flag=True, help="Enable live reload on file changes")
+@click.option("--profile", type=str, default=None, help="Dump cProfile stats to this file on shutdown")
 @click.version_option(version=__version__, prog_name="ssserve")
 def main(
     path: str,
@@ -130,7 +149,15 @@ def main(
     ssl_pass: str | None,
     no_port_switching: bool,
     live_reload: bool,
+    profile: str | None,
 ) -> None:
+    global _profiler, _profile_path
+    if profile:
+        _profiler = cProfile.Profile()
+        _profile_path = profile
+        _profiler.enable()
+        atexit.register(_dump_profile)
+        signal.signal(signal.SIGTERM, _handle_sigterm)
     root_dir = os.path.abspath(path) if path else os.getcwd()
 
     if not os.path.isdir(root_dir):

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import cProfile
 import json
 import os
 import pstats
@@ -77,6 +76,7 @@ def _start_server(
     serve_dir: Path,
     extra_args: list[str] | None = None,
     config: dict | None = None,
+    profile_path: str | None = None,
 ) -> tuple[subprocess.Popen, int]:
     if config:
         (serve_dir / "serve.json").write_text(json.dumps(config))
@@ -86,6 +86,7 @@ def _start_server(
     args = (
         [python, "-m", "ssserve", str(serve_dir), "-l", str(port), "--no-port-switching", "-L"]
         + (extra_args or [])
+        + (["--profile", profile_path] if profile_path else [])
     )
     proc = subprocess.Popen(
         args,
@@ -147,24 +148,20 @@ def _warm_up(url: str, requests: int = 5) -> None:
 
 @pytest.fixture
 def profiled_server(test_dir: Path, request) -> tuple[str, Path]:
-    proc, port = _start_server(test_dir)
+    PROFILES_DIR.mkdir(parents=True, exist_ok=True)
+    prof_path = str(PROFILES_DIR / f"{request.node.name}.prof")
+
+    proc, port = _start_server(test_dir, profile_path=prof_path)
     url = f"http://localhost:{port}"
 
     _warm_up(url)
-
-    profiler = cProfile.Profile()
-    profiler.enable()
-
     yield url, PROFILES_DIR
-
-    profiler.disable()
-    PROFILES_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = PROFILES_DIR / f"{request.node.name}.prof"
-    profiler.dump_stats(str(out_path))
-    stats = pstats.Stats(str(out_path))
-    print(f"\n  CPU profile saved: {out_path}")
-    stats.print_stats(20)
     _stop_server(proc)
+
+    if Path(prof_path).exists():
+        stats = pstats.Stats(prof_path)
+        print(f"\n  CPU profile saved: {prof_path}")
+        stats.print_stats(20)
 
 
 @pytest.fixture
