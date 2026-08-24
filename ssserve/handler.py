@@ -26,6 +26,7 @@ _etag_cache: LockFreeCache = LockFreeCache(max_size=2048, ttl=300.0)
 _gzip_cache: LockFreeCache = LockFreeCache(max_size=1024, ttl=60.0)
 _file_cache: LockFreeCache = LockFreeCache(max_size=512, ttl=30.0)
 _error_cache: LockFreeCache = LockFreeCache(max_size=64, ttl=60.0)
+_listing_cache: LockFreeCache = LockFreeCache(max_size=256, ttl=10.0)
 
 
 def _apply_segments(template: str, groups: dict[str, str]) -> str:
@@ -516,15 +517,24 @@ class ServeHandler(BaseHTTPRequestHandler):
 
             if self._is_listing_allowed(url_path):
                 try:
-                    entries = sorted(os.scandir(fs_path), key=lambda e: (not e.is_dir(), e.name.lower()))
-                    entries = [e for e in entries if not self._is_unlisted(e.name)]
-                    if not url_path.endswith("/"):
-                        self._send_redirect(url_path + "/", 301)
-                        return
-                    html = render_listing(url_path, fs_path, entries)
-                    if self.live_reload:
-                        html = self.live_reload.inject_script(html, self.live_reload.version)
-                    body = html.encode("utf-8")
+                    dir_stat = os.stat(fs_path)
+                    cache_key = f"{fs_path}:{dir_stat.st_mtime}:{dir_stat.st_size}"
+                    cached_body = _listing_cache.get(cache_key)
+
+                    if cached_body is not None:
+                        body = cached_body
+                    else:
+                        entries = sorted(os.scandir(fs_path), key=lambda e: (not e.is_dir(), e.name.lower()))
+                        entries = [e for e in entries if not self._is_unlisted(e.name)]
+                        if not url_path.endswith("/"):
+                            self._send_redirect(url_path + "/", 301)
+                            return
+                        html_content = render_listing(url_path, fs_path, entries)
+                        if self.live_reload:
+                            html_content = self.live_reload.inject_script(html_content, self.live_reload.version)
+                        body = html_content.encode("utf-8")
+                        _listing_cache.set(cache_key, body)
+
                     self.send_response(HTTPStatus.OK)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
                     self.send_header("Content-Length", str(len(body)))
