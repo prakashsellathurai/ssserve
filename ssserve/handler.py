@@ -207,11 +207,14 @@ class ServeHandler(BaseHTTPRequestHandler):
 
     def _resolve_path(self, url_path: str) -> str | None:
         normalized = self._normalize_path(url_path)
+        return self._resolve_path_fast(normalized)
+
+    def _resolve_path_fast(self, url_path: str) -> str | None:
         if self.config.public:
             base = os.path.join(self.root_dir, self.config.public)
         else:
             base = self.root_dir
-        fs_path = os.path.normpath(os.path.join(base, normalized.lstrip("/")))
+        fs_path = os.path.normpath(os.path.join(base, url_path.lstrip("/")))
 
         if not fs_path.startswith(os.path.normpath(base)):
             return None
@@ -246,10 +249,11 @@ class ServeHandler(BaseHTTPRequestHandler):
             return self._resolve_path(html_path)
         return None
 
-    def _check_trailing_slash(self, url_path: str) -> str | None:
+    def _check_trailing_slash(self, url_path: str, fs_path: str | None = None) -> str | None:
         if self.config.trailing_slash is None:
             return None
-        fs_path = self._resolve_path(url_path)
+        if fs_path is None:
+            fs_path = self._resolve_path_fast(url_path)
         if fs_path and os.path.isdir(fs_path):
             if not url_path.endswith("/") and self.config.trailing_slash:
                 return url_path + "/"
@@ -481,7 +485,9 @@ class ServeHandler(BaseHTTPRequestHandler):
                 self._send_redirect(cu_result, 301)
                 return
 
-        ts_result = self._check_trailing_slash(url_path)
+        fs_path = self._resolve_path_fast(url_path)
+
+        ts_result = self._check_trailing_slash(url_path, fs_path)
         if ts_result:
             self._send_redirect(ts_result, 301)
             return
@@ -495,8 +501,10 @@ class ServeHandler(BaseHTTPRequestHandler):
         rewritten = self._check_rewrites(url_path)
         if rewritten:
             url_path = rewritten
+            fs_path = self._resolve_path_fast(url_path)
 
-        fs_path = self._resolve_with_clean_urls(url_path)
+        if not fs_path:
+            fs_path = self._resolve_with_clean_urls(url_path)
 
         if fs_path and os.path.isdir(fs_path):
             for index in ("index.html", "index.htm"):
