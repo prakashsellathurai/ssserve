@@ -22,10 +22,10 @@ from ssserve.fastops import sendfile as fast_sendfile
 from ssserve.listing import render_listing
 from ssserve.livereload import LiveReload
 
-_etag_cache: LockFreeCache = LockFreeCache(max_size=2048, ttl=300.0)
-_gzip_cache: LockFreeCache = LockFreeCache(max_size=1024, ttl=60.0)
-_file_cache: LockFreeCache = LockFreeCache(max_size=512, ttl=30.0)
-_error_cache: LockFreeCache = LockFreeCache(max_size=64, ttl=60.0)
+_etag_cache: LockFreeCache = LockFreeCache(max_size=2048, ttl=300.0)   # Keep - etags are small strings
+_gzip_cache: LockFreeCache = LockFreeCache(max_size=512, ttl=120.0)    # Reduced from 1024 - gzip is memory-heavy
+_file_cache: LockFreeCache = LockFreeCache(max_size=128, ttl=30.0)     # Reduced from 512 - avoid memory bloat
+_error_cache: LockFreeCache = LockFreeCache(max_size=64, ttl=60.0)     # Keep
 _listing_cache: LockFreeCache = LockFreeCache(max_size=256, ttl=10.0)
 
 
@@ -98,6 +98,13 @@ def _get_gzip_data(data: bytes, cache_key: str) -> bytes | None:
 
 
 def _get_file_content(fs_path: str, mtime: float, size: int) -> bytes | None:
+    # Don't cache files larger than 256KB - they waste cache space and cause memory bloat
+    if size > 256 * 1024:
+        try:
+            with open(fs_path, "rb") as f:
+                return f.read()
+        except OSError:
+            return None
     cache_key = f"{fs_path}:{mtime}:{size}"
     cached = _file_cache.get(cache_key)
     if cached is not None:
