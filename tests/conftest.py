@@ -166,29 +166,44 @@ def profiled_server(test_dir: Path, request) -> tuple[str, Path]:
 
 @pytest.fixture
 def memray_server(test_dir: Path, request) -> tuple[str, Path]:
-    proc, port = _start_server(test_dir)
-    url = f"http://localhost:{port}"
-
-    try:
-        import memray
-    except ImportError:
-        pytest.skip("memray not installed")
-        yield url, PROFILES_DIR
-        _stop_server(proc)
-        return
-
-    _warm_up(url)
-
     PROFILES_DIR.mkdir(parents=True, exist_ok=True)
     out_path = PROFILES_DIR / f"{request.node.name}.bin"
     out_path.unlink(missing_ok=True)
-    tracker = memray.Tracker(str(out_path))
 
-    with tracker:
-        yield url, PROFILES_DIR
+    try:
+        import memray  # noqa: F401
+    except ImportError:
+        pytest.skip("memray not installed")
+        # Need a dummy yield for cleanup
+        proc, port = _start_server(test_dir)
+        yield f"http://localhost:{port}", PROFILES_DIR
+        _stop_server(proc)
+        return
 
-    print(f"\n  Memory profile saved: {out_path}")
+    # Start server under memray tracking
+    port = find_free_port()
+    venv_python = Path(__file__).resolve().parent.parent / ".venv" / "bin" / "python"
+    python = str(venv_python) if venv_python.exists() else sys.executable
+
+    args = [
+        python, "-m", "memray", "run", "-o", str(out_path),
+        "-m", "ssserve", str(test_dir), "-l", str(port),
+        "--no-port-switching", "-L"
+    ]
+    proc = subprocess.Popen(
+        args,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    _wait_for_server(port, proc)
+    url = f"http://localhost:{port}"
+
+    _warm_up(url)
+    yield url, PROFILES_DIR
     _stop_server(proc)
+
+    if out_path.exists():
+        print(f"\n  Memory profile saved: {out_path}")
 
 
 @pytest.fixture
