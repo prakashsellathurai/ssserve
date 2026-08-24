@@ -2,7 +2,7 @@ name: Publish ASV Benchmarks
 
 on:
   workflow_run:
-    workflows: ["Benchmarks"]
+    workflows: ["Benchmarks", "Backfill Benchmarks"]
     types:
       - completed
 

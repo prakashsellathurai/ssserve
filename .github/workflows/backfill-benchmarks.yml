@@ -47,7 +47,7 @@ jobs:
           echo "Running benchmarks for range: $RANGE"
 
           git branch -f main HEAD 2>/dev/null || true
-          uv run asv run --show-stderr "$RANGE"
+          uv run asv run --python=same --show-stderr "$RANGE"
 
       - name: Publish benchmark HTML
         run: uv run asv publish
