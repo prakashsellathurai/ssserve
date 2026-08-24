@@ -94,6 +94,12 @@ class TestBasicServing:
         assert "Server" in headers
         assert "ssserve" in headers["Server"]
 
+    def test_serve_large_file(self, server_url: str):
+        resp = urllib.request.urlopen(f"{server_url}/file-5mb.bin")
+        data = resp.read()
+        assert len(data) == 5 * 1024 * 1024
+        assert resp.headers.get("Content-Length") == str(5 * 1024 * 1024)
+
 
 class TestDirectoryListing:
     def test_directory_with_index(self, server_url: str):

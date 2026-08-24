@@ -18,6 +18,7 @@ from ssserve.config import Config
 from ssserve.fastops import etag as fast_etag
 from ssserve.fastops import fast_gzip
 from ssserve.fastops import guess_type as fast_guess_type
+from ssserve.fastops import sendfile as fast_sendfile
 from ssserve.listing import render_listing
 from ssserve.livereload import LiveReload
 
@@ -433,7 +434,25 @@ class ServeHandler(BaseHTTPRequestHandler):
                 self.wfile.write(_lr_html)
             else:
                 if raw_content is None:
-                    raw_content = _get_file_content(fs_path, mtime, file_size)
+                    # Try sendfile for files > 64KB (avoids copying through userspace)
+                    if file_size > 65536:
+                        try:
+                            with open(fs_path, "rb") as f:
+                                in_fd = f.fileno()
+                                out_fd = self.wfile.fileno()
+                                remaining = file_size
+                                while remaining > 0:
+                                    sent = fast_sendfile(out_fd, in_fd, remaining)
+                                    if sent is None or sent == 0:
+                                        break
+                                    remaining -= sent
+                            # sendfile succeeded, skip fallback
+                            self._log_request(status, file_size)
+                            return
+                        except (OSError, AttributeError, TypeError):
+                            pass
+                # Fallback: read into memory and write
+                raw_content = _get_file_content(fs_path, mtime, file_size)
                 if raw_content is not None:
                     self.wfile.write(raw_content)
                 else:
