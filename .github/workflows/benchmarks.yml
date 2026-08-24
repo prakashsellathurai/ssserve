@@ -42,7 +42,7 @@ jobs:
       - name: Run benchmarks (quick)
         run: |
           git branch -f main HEAD 2>/dev/null || true
-          uv run asv run --python=same --quick --show-stderr \
+          uv run asv run --python=same  --show-stderr \
             --set-commit-hash=$(git rev-parse HEAD)
 
       - name: Publish benchmark HTML
