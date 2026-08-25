@@ -20,6 +20,17 @@ def _get(url: str, headers: dict | None = None) -> tuple[int, dict[str, str], by
         return e.code, dict(e.headers), e.read()
 
 
+def _poll_lr_check(url: str, timeout: float = 5.0) -> dict:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        _, _, body = _get(f"{url}/__ssserve/lr-check")
+        data = json.loads(body)
+        if data.get("reload"):
+            return data
+        time.sleep(0.05)
+    return data
+
+
 class TestLiveReload:
     def test_injects_script_with_flag(self, test_dir: Path, server_factory):
         url = server_factory(test_dir, extra_args=["--live-reload"])
@@ -64,9 +75,7 @@ class TestLiveReload:
         _, _, body = _get(f"{url}/__ssserve/lr-check")
         v1 = json.loads(body)["version"]
         (test_dir / "index.html").write_text("<h1>Modified</h1>")
-        time.sleep(2)
-        _, _, body = _get(f"{url}/__ssserve/lr-check")
-        data = json.loads(body)
+        data = _poll_lr_check(url)
         assert data["version"] > v1
         assert data["reload"] is True
 

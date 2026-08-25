@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import calendar
 import html
 import io
 import json
@@ -353,14 +354,16 @@ class ServeHandler(BaseHTTPRequestHandler):
                 ims = self.headers.get("If-Modified-Since")
                 if ims:
                     try:
-                        ims_time = time.mktime(parsedate(ims))
-                        if int(mtime) <= int(ims_time):
-                            self.send_response(HTTPStatus.NOT_MODIFIED)
-                            self._apply_common_headers()
-                            self.end_headers()
-                            self._log_request(304)
-                            return
-                    except (TypeError, OSError):
+                        parsed = parsedate(ims)
+                        if parsed:
+                            ims_time = calendar.timegm(parsed)
+                            if int(mtime) <= int(ims_time):
+                                self.send_response(HTTPStatus.NOT_MODIFIED)
+                                self._apply_common_headers()
+                                self.end_headers()
+                                self._log_request(304)
+                                return
+                    except (TypeError, OSError, ValueError):
                         pass
 
         accept_encoding = self.headers.get("Accept-Encoding", "")
@@ -378,7 +381,6 @@ class ServeHandler(BaseHTTPRequestHandler):
         _lr_html: bytes | None = None
         gzipped_data: bytes | None = None
         raw_content: bytes | None = None
-
         if use_lr or use_gzip:
             raw_content = _get_file_content(fs_path, mtime, file_size)
 
@@ -458,9 +460,10 @@ class ServeHandler(BaseHTTPRequestHandler):
                                     if sent is None or sent == 0:
                                         break
                                     remaining -= sent
-                            # sendfile succeeded, skip fallback
-                            self._log_request(status, file_size)
-                            return
+                            if remaining == 0:
+                                # sendfile succeeded, skip fallback
+                                self._log_request(status, file_size)
+                                return
                         except (OSError, AttributeError, TypeError):
                             pass
                 # Fallback: read into memory and write

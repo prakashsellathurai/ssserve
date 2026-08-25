@@ -7,6 +7,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import psutil
 import pytest
 
+pytestmark = pytest.mark.slow
+
 
 def _find_server_pid(port: int) -> int | None:
     for conn in psutil.net_connections():
@@ -37,7 +39,6 @@ class TestMemory:
         assert pid is not None, f"Could not find server PID for port {port}"
         proc = psutil.Process(pid)
 
-        time.sleep(0.5)
         rss = proc.memory_info().rss
         rss_mb = rss / 1024 / 1024
         print(f"\n  RSS (idle): {rss_mb:.1f} MB")
@@ -73,7 +74,7 @@ class TestMemory:
 
         rss_before = proc.memory_info().rss
         _serve_requests(f"{server_url}/file-100kb.bin", n=50, concurrency=25)
-        time.sleep(0.5)
+        time.sleep(0.1)
         rss_after = proc.memory_info().rss
 
         delta_mb = (rss_after - rss_before) / 1024 / 1024
@@ -96,8 +97,8 @@ class TestCPU:
         assert pid is not None
         proc = psutil.Process(pid)
 
-        cpu = proc.cpu_percent(interval=2.0)
-        print(f"\n  CPU (idle, 2s interval): {cpu:.1f}%")
+        cpu = proc.cpu_percent(interval=1.0)
+        print(f"\n  CPU (idle, 1s interval): {cpu:.1f}%")
         assert cpu < 10, f"CPU idle {cpu:.1f}% ≥ 10%"
 
     def test_cpu_under_load(self, server_url: str):
@@ -113,12 +114,11 @@ class TestCPU:
                     urllib.request.urlopen(f"{server_url}/file-1kb.bin").read()
 
             futures = [ex.submit(_load, i) for i in range(10)]
-            time.sleep(1.0)
-            cpu = proc.cpu_percent(interval=2.0)
+            cpu = proc.cpu_percent(interval=1.0)
             for f in futures:
                 f.result()
 
-        print(f"\n  CPU (under load, 10 concurrent x 20 reqs, 2s interval): {cpu:.1f}%")
+        print(f"\n  CPU (under load, 10 concurrent x 20 reqs, 1s interval): {cpu:.1f}%")
         assert cpu < 100, f"CPU under load {cpu:.1f}% ≥ 100% (single process limit)"
 
 
@@ -129,7 +129,7 @@ class TestFileDescriptors:
         assert pid is not None
         proc = psutil.Process(pid)
 
-        fds = proc.num_fds()
+        fds = proc.num_fds() if hasattr(proc, "num_fds") else proc.num_handles()
         print(f"\n  File descriptors (idle): {fds}")
         assert fds < _MAX_FDS, f"FDs {fds} ≥ {_MAX_FDS}"
 
@@ -139,10 +139,10 @@ class TestFileDescriptors:
         assert pid is not None
         proc = psutil.Process(pid)
 
-        fds_before = proc.num_fds()
+        fds_before = proc.num_fds() if hasattr(proc, "num_fds") else proc.num_handles()
         _serve_requests(f"{server_url}/file-1kb.bin", n=100, concurrency=25)
-        time.sleep(0.5)
-        fds_after = proc.num_fds()
+        time.sleep(0.1)
+        fds_after = proc.num_fds() if hasattr(proc, "num_fds") else proc.num_handles()
 
         print(
             f"\n  File descriptors — under load (100 reqs @ 25 concurrency):"

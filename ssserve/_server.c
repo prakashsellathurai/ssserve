@@ -20,6 +20,7 @@
 #include <zlib.h>
 #include <dirent.h>
 #include <fnmatch.h>
+#include <stdarg.h>
 
 #define MAX_EVENTS 64
 #define MAX_CONNECTIONS 1024
@@ -73,6 +74,10 @@ typedef struct {
 
 static ServerConfig server_config;
 
+static int compute_etag(long mtime, long size, char *buf, size_t buf_size) {
+    return snprintf(buf, buf_size, "\"%ld-%ld\"", mtime, size);
+}
+
 /* ================================================================
  *  ETag cache — fixed-size circular buffer
  * ================================================================ */
@@ -100,7 +105,7 @@ static void etag_cache_get(long mtime, long size, char *buf, size_t buf_size) {
     etag_cache_clock++;
     etag_cache[idx].valid = 1;
     snprintf(etag_cache[idx].key, sizeof(etag_cache[idx].key), "%s", key);
-    snprintf(etag_cache[idx].etag, sizeof(etag_cache[idx].etag), "\"%ld-%ld\"", mtime, size);
+    compute_etag(mtime, size, etag_cache[idx].etag, sizeof(etag_cache[idx].etag));
     strncpy(buf, etag_cache[idx].etag, buf_size);
 }
 
@@ -215,6 +220,50 @@ static ssize_t write_all(int fd, const void *buf, size_t len) {
     return (ssize_t)len;
 }
 
+#define HEADER_BUF_SIZE 4096
+
+typedef struct {
+    char data[HEADER_BUF_SIZE];
+    size_t len;
+} HeaderBuf;
+
+static inline void hb_init(HeaderBuf *hb) {
+    hb->len = 0;
+    hb->data[0] = '\0';
+}
+
+static inline void hb_append(HeaderBuf *hb, const char *str) {
+    size_t slen = strlen(str);
+    if (hb->len + slen < HEADER_BUF_SIZE) {
+        memcpy(hb->data + hb->len, str, slen);
+        hb->len += slen;
+        hb->data[hb->len] = '\0';
+    }
+}
+
+static inline void hb_appendf(HeaderBuf *hb, const char *fmt, ...) {
+    if (hb->len >= HEADER_BUF_SIZE - 1) return;
+    va_list args;
+    va_start(args, fmt);
+    int n = vsnprintf(hb->data + hb->len, HEADER_BUF_SIZE - hb->len, fmt, args);
+    va_end(args);
+    if (n > 0) {
+        hb->len += (size_t)n;
+        if (hb->len >= HEADER_BUF_SIZE) {
+            hb->len = HEADER_BUF_SIZE - 1;
+            hb->data[hb->len] = '\0';
+        }
+    }
+}
+
+static inline void hb_crlf(HeaderBuf *hb) {
+    hb_append(hb, "\r\n");
+}
+
+static inline ssize_t hb_write(int fd, const HeaderBuf *hb) {
+    return write_all(fd, hb->data, hb->len);
+}
+
 static const char *get_mime_type(const char *path) {
     const char *dot = strrchr(path, '.');
     if (!dot) return "application/octet-stream";
@@ -232,10 +281,6 @@ static const char *get_mime_type(const char *path) {
     if (strcmp(ext, "pdf") == 0) return "application/pdf";
     if (strcmp(ext, "bin") == 0) return "application/octet-stream";
     return "application/octet-stream";
-}
-
-static int compute_etag(long mtime, long size, char *buf, size_t buf_size) {
-    return snprintf(buf, buf_size, "\"%ld-%ld\"", mtime, size);
 }
 
 static char *gzip_compress(const char *data, size_t data_len, size_t *out_len, int level) {
@@ -438,9 +483,13 @@ static int cmp_dir_entry(const void *a, const void *b) {
 }
 
 static void write_extra_headers(int client_fd, const char *origin, const char *url_path);
+static void write_extra_headers_buf(HeaderBuf *hb, const char *origin, const char *url_path);
 static void apply_common_headers(int client_fd);
+static void apply_common_headers_buf(HeaderBuf *hb);
 static void apply_cors_headers(int client_fd, const char *origin);
+static void apply_cors_headers_buf(HeaderBuf *hb, const char *origin);
 static void apply_custom_headers(int client_fd, const char *url_path);
+static void apply_custom_headers_buf(HeaderBuf *hb, const char *url_path);
 static int inject_live_reload_script(const char *content, size_t content_len,
                                      char **out_content, size_t *out_len);
 
@@ -462,18 +511,15 @@ static void send_error_page(int client_fd, int status, const char *root_dir) {
         "<body><h1>%d</h1><p>%s</p></body></html>",
         title, status, message);
 
-    char header[512];
-    int header_len = snprintf(header, sizeof(header),
-        "HTTP/1.1 %d %s\r\n"
-        "Content-Type: text/html; charset=utf-8\r\n"
-        "Content-Length: %d\r\n"
-        "Server: ssserve\r\n"
-        "Connection: close\r\n",
-        status, title, body_len);
-
-    write_all(client_fd, header, header_len);
-    apply_common_headers(client_fd);
-    write_all(client_fd, "\r\n", 2);
+    HeaderBuf hb;
+    hb_init(&hb);
+    hb_appendf(&hb, "HTTP/1.1 %d %s\r\n", status, title);
+    hb_append(&hb, "Content-Type: text/html; charset=utf-8\r\n");
+    hb_appendf(&hb, "Content-Length: %d\r\n", body_len);
+    hb_append(&hb, "Server: ssserve\r\nConnection: close\r\n");
+    apply_common_headers_buf(&hb);
+    hb_crlf(&hb);
+    hb_write(client_fd, &hb);
     write_all(client_fd, body, body_len);
 }
 
@@ -485,17 +531,15 @@ static void send_error_page_for_file(int client_fd, int status, const char *root
     if (stat(error_path, &st) == 0) {
         int file_fd = open(error_path, O_RDONLY);
         if (file_fd >= 0) {
-            char header_buf[512];
-            int header_len = snprintf(header_buf, sizeof(header_buf),
-                "HTTP/1.1 %d\r\n"
-                "Content-Type: text/html; charset=utf-8\r\n"
-                "Content-Length: %ld\r\n"
-                "Server: ssserve\r\n"
-                "Connection: close\r\n",
-                status, (long)st.st_size);
-            write_all(client_fd, header_buf, header_len);
-            apply_common_headers(client_fd);
-            write_all(client_fd, "\r\n", 2);
+            HeaderBuf hb;
+            hb_init(&hb);
+            hb_appendf(&hb, "HTTP/1.1 %d\r\n", status);
+            hb_append(&hb, "Content-Type: text/html; charset=utf-8\r\n");
+            hb_appendf(&hb, "Content-Length: %ld\r\n", (long)st.st_size);
+            hb_append(&hb, "Server: ssserve\r\nConnection: close\r\n");
+            apply_common_headers_buf(&hb);
+            hb_crlf(&hb);
+            hb_write(client_fd, &hb);
 
             if (st.st_size > SENDFILE_THRESHOLD) {
                 off_t offset = 0;
@@ -589,7 +633,7 @@ static void render_listing(int client_fd, const char *fs_path, const char *url_p
         "<title>Index of %s</title>\n"
         "<style>\n"
         "body { font-family: sans-serif; margin: 2em; }\n"
-        "table { border-collapse: collapse; width: 100%; }\n"
+        "table { border-collapse: collapse; width: 100%%; }\n"
         "th, td { text-align: left; padding: 0.5em 1em; }\n"
         "th { border-bottom: 2px solid #333; }\n"
         "tr:hover { background: #f5f5f5; }\n"
@@ -722,17 +766,14 @@ static int parse_http_request(ConnectionState *conn) {
 }
 
 static void send_redirect(int client_fd, const char *location, int status) {
-    char header[1024];
-    int len = snprintf(header, sizeof(header),
-        "HTTP/1.1 %d Moved Permanently\r\n"
-        "Location: %s\r\n"
-        "Content-Length: 0\r\n"
-        "Server: ssserve\r\n"
-        "Connection: close\r\n",
-        status, location);
-    write_all(client_fd, header, len);
-    write_extra_headers(client_fd, NULL, NULL);
-    write_all(client_fd, "\r\n", 2);
+    HeaderBuf hb;
+    hb_init(&hb);
+    hb_appendf(&hb, "HTTP/1.1 %d Moved Permanently\r\n", status);
+    hb_appendf(&hb, "Location: %s\r\n", location);
+    hb_append(&hb, "Content-Length: 0\r\nServer: ssserve\r\nConnection: close\r\n");
+    write_extra_headers_buf(&hb, NULL, NULL);
+    hb_crlf(&hb);
+    hb_write(client_fd, &hb);
 }
 
 static void apply_cors_headers(int client_fd, const char *origin) {
@@ -765,10 +806,43 @@ static void apply_custom_headers(int client_fd, const char *url_path) {
     }
 }
 
+static void apply_cors_headers_buf(HeaderBuf *hb, const char *origin) {
+    if (!server_config.cors) return;
+    hb_append(hb, "Access-Control-Allow-Origin: *\r\n"
+                  "Access-Control-Allow-Headers: *\r\n"
+                  "Access-Control-Allow-Methods: GET, HEAD, OPTIONS\r\n"
+                  "Access-Control-Allow-Credentials: true\r\n");
+}
+
+static void apply_common_headers_buf(HeaderBuf *hb) {
+    if (!server_config.caching) {
+        hb_append(hb, "Cache-Control: no-store\r\n");
+    }
+}
+
+static void apply_custom_headers_buf(HeaderBuf *hb, const char *url_path) {
+    if (!url_path) return;
+    for (int i = 0; i < server_config.num_header_rules; i++) {
+        HeaderRule *rule = &server_config.header_rules[i];
+        if (fnmatch(rule->pattern, url_path, 0) == 0) {
+            for (int j = 0; j < rule->count; j++) {
+                hb_append(hb, rule->lines[j]);
+                hb_append(hb, "\r\n");
+            }
+        }
+    }
+}
+
 static void write_extra_headers(int client_fd, const char *origin, const char *url_path) {
     apply_custom_headers(client_fd, url_path);
     apply_cors_headers(client_fd, origin);
     apply_common_headers(client_fd);
+}
+
+static void write_extra_headers_buf(HeaderBuf *hb, const char *origin, const char *url_path) {
+    apply_custom_headers_buf(hb, url_path);
+    apply_cors_headers_buf(hb, origin);
+    apply_common_headers_buf(hb);
 }
 
 static int check_callbacks(ConnectionState *conn, char *new_path, size_t new_path_size, int *status_code) {
@@ -1522,7 +1596,7 @@ static void *worker_thread(void *arg) {
                     setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
 
                     struct epoll_event ev;
-                    ev.events = EPOLLIN | EPOLLET;
+                    ev.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
                     ev.data.fd = client_fd;
                     epoll_ctl(server_config.epoll_fd, EPOLL_CTL_ADD, client_fd, &ev);
                 }
@@ -1534,29 +1608,45 @@ static void *worker_thread(void *arg) {
 
                 /* Drain all available data (edge-triggered requires EAGAIN loop) */
                 ssize_t total = 0;
+                int eof = 0;
                 while (1) {
                     ssize_t n = read(client_fd, conn.buffer + total, BUFFER_SIZE - 1 - total);
                     if (n < 0) {
-                        if (errno == EAGAIN || errno == EWOULDBLOCK) break;
                         if (errno == EINTR) continue;
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+                        eof = 1;
                         break;
                     }
-                    if (n == 0) break;
+                    if (n == 0) {
+                        eof = 1;
+                        break;
+                    }
                     total += n;
                     if (total >= BUFFER_SIZE - 1) break;
                 }
 
                 if (total > 0) {
-                    conn.buf_len = total;
+                    conn.buf_len = (int)total;
                     conn.buffer[total] = '\0';
 
                     if (parse_http_request(&conn) == 0) {
                         handle_request(&conn);
-                        if (!should_close_connection(&conn)) {
-                            /* Keep-alive: don't close, wait for next request */
+                        if (!should_close_connection(&conn) && !eof) {
+                            /* Re-arm socket for next keep-alive request */
+                            struct epoll_event ev;
+                            ev.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
+                            ev.data.fd = client_fd;
+                            epoll_ctl(server_config.epoll_fd, EPOLL_CTL_MOD, client_fd, &ev);
                             continue;
                         }
                     }
+                } else if (!eof) {
+                    /* Spurious wakeup or no data yet, re-arm socket */
+                    struct epoll_event ev;
+                    ev.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
+                    ev.data.fd = client_fd;
+                    epoll_ctl(server_config.epoll_fd, EPOLL_CTL_MOD, client_fd, &ev);
+                    continue;
                 }
 
                 epoll_ctl(server_config.epoll_fd, EPOLL_CTL_DEL, client_fd, NULL);
