@@ -46,6 +46,9 @@ typedef struct {
     int caching;
     int no_compression;
     int clean_urls;
+    int trailing_slash;  /* -1=none, 0=off, 1=on */
+    int single;          /* SPA mode: serve index.html for 404 */
+    int symlinks;
     HeaderRule *header_rules;
     int num_header_rules;
 } ServerConfig;
@@ -719,10 +722,24 @@ static void handle_request(ConnectionState *conn) {
             /* Only redirect if the .html file exists (verified by resolving with .html) */
             char html_full_path[PATH_MAX];
             if (resolve_path(normalized, server_config.root_dir, html_full_path, sizeof(html_full_path)) == 0) {
-                struct stat html_st;
-                if (stat(html_full_path, &html_st) == 0) {
-                    send_redirect(conn->fd, new_path, 301);
-                    return;
+                /* Skip symlinks if symlinks disabled */
+                if (!server_config.symlinks) {
+                    struct stat html_lst;
+                    if (lstat(html_full_path, &html_lst) == 0 && S_ISLNK(html_lst.st_mode)) {
+                        /* Don't redirect, fall through to normal handling */
+                    } else {
+                        struct stat html_st;
+                        if (stat(html_full_path, &html_st) == 0) {
+                            send_redirect(conn->fd, new_path, 301);
+                            return;
+                        }
+                    }
+                } else {
+                    struct stat html_st;
+                    if (stat(html_full_path, &html_st) == 0) {
+                        send_redirect(conn->fd, new_path, 301);
+                        return;
+                    }
                 }
             }
         }
@@ -760,7 +777,9 @@ static void handle_request(ConnectionState *conn) {
     }
 
     struct stat st;
-    if (stat(full_path, &st) < 0) {
+    struct stat lst;
+    if (lstat(full_path, &lst) < 0) {
+        /* File not found - try clean URLs and SPA fallback */
         /* Try appending .html for clean URLs (e.g., /about → /about.html) */
         if (server_config.clean_urls) {
             size_t norm_len = strlen(normalized);
@@ -778,8 +797,69 @@ static void handle_request(ConnectionState *conn) {
                 }
             }
         }
+        /* SPA fallback: serve index.html for 404 */
+        if (server_config.single) {
+            char index_path[PATH_MAX];
+            snprintf(index_path, sizeof(index_path), "%s/index.html", server_config.root_dir);
+            if (stat(index_path, &st) == 0 && S_ISREG(st.st_mode)) {
+                snprintf(full_path, sizeof(full_path), "%s", index_path);
+                snprintf(conn->path, MAX_PATH, "/index.html");
+                goto serve_file;
+            }
+        }
         send_error_page_for_file(conn->fd, 404, server_config.root_dir);
         return;
+    }
+
+    /* Check symlinks: if symlinks disabled and path is a symlink, reject */
+    if (!server_config.symlinks && S_ISLNK(lst.st_mode)) {
+        send_error_page_for_file(conn->fd, 404, server_config.root_dir);
+        return;
+    }
+
+    /* Use stat() to get info about the target (follows symlinks) */
+    if (stat(full_path, &st) < 0) {
+        send_error_page_for_file(conn->fd, 404, server_config.root_dir);
+        return;
+    }
+
+    /* Trailing slash handling */
+    if (server_config.trailing_slash >= 0) {
+        size_t path_len = strlen(normalized);
+        int has_slash = (path_len > 0 && normalized[path_len - 1] == '/');
+        if (S_ISDIR(st.st_mode)) {
+            /* Directory: redirect based on trailing_slash config */
+            if (!has_slash && server_config.trailing_slash) {
+                /* trailing_slash=True, no slash → add slash */
+                char redirect_url[MAX_PATH + 32];
+                snprintf(redirect_url, sizeof(redirect_url), "%s/", normalized);
+                send_redirect(conn->fd, redirect_url, 301);
+                return;
+            }
+            if (has_slash && !server_config.trailing_slash) {
+                /* trailing_slash=False, has slash → remove slash */
+                char redirect_url[MAX_PATH];
+                if (path_len > 1) {
+                    snprintf(redirect_url, sizeof(redirect_url), "%.*s", (int)(path_len - 1), normalized);
+                } else {
+                    snprintf(redirect_url, sizeof(redirect_url), "/");
+                }
+                send_redirect(conn->fd, redirect_url, 301);
+                return;
+            }
+        } else if (S_ISREG(st.st_mode)) {
+            /* File: redirect if trailing slash present and trailing_slash=False */
+            if (has_slash && !server_config.trailing_slash) {
+                char redirect_url[MAX_PATH];
+                if (path_len > 1) {
+                    snprintf(redirect_url, sizeof(redirect_url), "%.*s", (int)(path_len - 1), normalized);
+                } else {
+                    snprintf(redirect_url, sizeof(redirect_url), "/");
+                }
+                send_redirect(conn->fd, redirect_url, 301);
+                return;
+            }
+        }
     }
 
     if (S_ISDIR(st.st_mode)) {
@@ -1121,17 +1201,19 @@ static PyObject *py_serve(PyObject *self, PyObject *args, PyObject *kw) {
     int no_compression = 0;
     int symlinks = 0;
     int clean_urls = 1;
+    int trailing_slash = -1;
+    int single = 0;
     PyObject *config_callback = NULL;
     PyObject *custom_headers = NULL;
 
     static char *kwlist[] = {"port", "root_dir", "num_workers", "cors", "caching",
                             "etag", "no_compression", "symlinks", "config_callback",
-                            "custom_headers", "clean_urls", NULL};
+                            "custom_headers", "clean_urls", "trailing_slash", "single", NULL};
 
-    if (!PyArg_ParseTupleAndKeywords(args, kw, "is|iiiiiiOOi", kwlist,
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "is|iiiiiiOOiii", kwlist,
                                      &port, &root_dir, &num_workers, &cors, &caching,
                                      &etag, &no_compression, &symlinks, &config_callback,
-                                     &custom_headers, &clean_urls))
+                                     &custom_headers, &clean_urls, &trailing_slash, &single))
         return NULL;
 
     server_config.epoll_fd = epoll_create1(0);
@@ -1193,6 +1275,9 @@ static PyObject *py_serve(PyObject *self, PyObject *args, PyObject *kw) {
     server_config.caching = caching;
     server_config.no_compression = no_compression;
     server_config.clean_urls = clean_urls;
+    server_config.trailing_slash = trailing_slash;
+    server_config.single = single;
+    server_config.symlinks = symlinks;
 
     /* Parse custom headers: list of tuples (pattern, key, value) */
     server_config.header_rules = NULL;

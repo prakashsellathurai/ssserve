@@ -302,6 +302,8 @@ def main(
                         config_callback=config_callback,
                         custom_headers=custom_headers_list if custom_headers_list else None,
                         clean_urls=1 if cfg.clean_urls else 0,
+                        trailing_slash=-1 if cfg.trailing_slash is None else (1 if cfg.trailing_slash else 0),
+                        single=1 if single else 0,
                     )
             except ImportError:
                 click.echo("  Warning: C server not available, using Python server", err=True)
