@@ -25,7 +25,7 @@ libraries = ["z"]
 [[tool.setuptools.ext-modules]]
 name = "ssserve._server"
 sources = ["ssserve/_server.c"]
-libraries = ["pthread"]
+libraries = ["pthread", "z"]
 
 [tool.pytest.ini_options]
 markers = [

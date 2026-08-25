@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <limits.h>
 #include <time.h>
+#include <zlib.h>
 
 #define MAX_EVENTS 64
 #define MAX_CONNECTIONS 1024
@@ -32,6 +33,7 @@ typedef struct {
     pthread_t *workers;
     volatile int running;
     PyObject *config_callback;
+    int etag;
 } ServerConfig;
 
 typedef struct {
@@ -41,7 +43,9 @@ typedef struct {
     int method;
     char path[MAX_PATH];
     char *host;
-    /* Headers parsed in Tasks 3, 6: Accept-Encoding, Range, If-None-Match, If-Modified-Since */
+    char *accept_encoding;
+    char *if_none_match;
+    char *if_modified_since;
 } ConnectionState;
 
 static ServerConfig server_config;
@@ -89,6 +93,35 @@ static const char *get_mime_type(const char *path) {
     if (strcmp(ext, "pdf") == 0) return "application/pdf";
     if (strcmp(ext, "bin") == 0) return "application/octet-stream";
     return "application/octet-stream";
+}
+
+static int compute_etag(long mtime, long size, char *buf, size_t buf_size) {
+    return snprintf(buf, buf_size, "\"%ld-%ld\"", mtime, size);
+}
+
+static char *gzip_compress(const char *data, size_t data_len, size_t *out_len, int level) {
+    z_stream strm;
+    memset(&strm, 0, sizeof(strm));
+    if (deflateInit2(&strm, level, Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY) != Z_OK)
+        return NULL;
+
+    size_t max_out = data_len + (data_len >> 10) + 64;
+    char *out = (char *)malloc(max_out);
+    if (!out) { deflateEnd(&strm); return NULL; }
+
+    strm.next_in = (Bytef *)data;
+    strm.avail_in = (uInt)data_len;
+    strm.next_out = (Bytef *)out;
+    strm.avail_out = (uInt)max_out;
+
+    if (deflate(&strm, Z_FINISH) != Z_STREAM_END) {
+        free(out);
+        deflateEnd(&strm);
+        return NULL;
+    }
+    *out_len = strm.total_out;
+    deflateEnd(&strm);
+    return out;
 }
 
 static int url_decode(const char *src, char *dst, size_t dst_size) {
@@ -257,14 +290,30 @@ static int parse_http_request(ConnectionState *conn) {
 
     char *header = headers_start + 2;
     while (header && *header && strncmp(header, "\r\n", 2) != 0) {
+        char *next_header = strstr(header, "\r\n");
+        if (!next_header) break;
+
         if (strncmp(header, "Host:", 5) == 0) {
-            conn->host = header + 5; /* Points into conn->buffer, valid for conn lifetime */
+            conn->host = header + 5;
             while (*conn->host == ' ') conn->host++;
             char *end = strstr(conn->host, "\r\n");
             if (end) *end = '\0';
+        } else if (strncmp(header, "Accept-Encoding:", 16) == 0) {
+            conn->accept_encoding = header + 16;
+            while (*conn->accept_encoding == ' ') conn->accept_encoding++;
+            char *end = strstr(conn->accept_encoding, "\r\n");
+            if (end) *end = '\0';
+        } else if (strncmp(header, "If-None-Match:", 14) == 0) {
+            conn->if_none_match = header + 14;
+            while (*conn->if_none_match == ' ') conn->if_none_match++;
+            char *end = strstr(conn->if_none_match, "\r\n");
+            if (end) *end = '\0';
+        } else if (strncmp(header, "If-Modified-Since:", 18) == 0) {
+            conn->if_modified_since = header + 18;
+            while (*conn->if_modified_since == ' ') conn->if_modified_since++;
+            char *end = strstr(conn->if_modified_since, "\r\n");
+            if (end) *end = '\0';
         }
-        char *next_header = strstr(header, "\r\n");
-        if (!next_header) break;
         header = next_header + 2;
     }
 
@@ -357,16 +406,62 @@ static void handle_request(ConnectionState *conn) {
     char header_buf[512];
     int header_len;
 
+    int etag_enabled = server_config.etag;
+    char etag_buf[64] = {0};
+    if (etag_enabled) {
+        compute_etag((long)st.st_mtime, (long)st.st_size, etag_buf, sizeof(etag_buf));
+    }
+
+    /* 304 Not Modified: If-None-Match */
+    if (etag_enabled && conn->if_none_match) {
+        if (strcmp(conn->if_none_match, etag_buf) == 0) {
+            header_len = snprintf(header_buf, sizeof(header_buf),
+                "HTTP/1.1 304 Not Modified\r\n"
+                "ETag: %s\r\n"
+                "Server: ssserve\r\n"
+                "\r\n",
+                etag_buf);
+            write_all(conn->fd, header_buf, header_len);
+            return;
+        }
+    }
+
+    /* 304 Not Modified: If-Modified-Since (when ETag disabled) */
+    if (!etag_enabled && conn->if_modified_since) {
+        struct tm ims_tm;
+        memset(&ims_tm, 0, sizeof(ims_tm));
+        if (strptime(conn->if_modified_since, "%a, %d %b %Y %H:%M:%S", &ims_tm) != NULL) {
+            time_t ims_time = timegm(&ims_tm);
+            if ((long)st.st_mtime <= (long)ims_time) {
+                header_len = snprintf(header_buf, sizeof(header_buf),
+                    "HTTP/1.1 304 Not Modified\r\n"
+                    "Server: ssserve\r\n"
+                    "\r\n");
+                write_all(conn->fd, header_buf, header_len);
+                return;
+            }
+        }
+    }
+
     if (conn->method == HTTP_HEAD) {
         header_len = snprintf(header_buf, sizeof(header_buf),
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: %s\r\n"
             "Content-Length: %ld\r\n"
             "Server: ssserve\r\n"
+            "%s%s\r\n"
             "\r\n",
-            mime_type, (long)st.st_size);
+            mime_type, (long)st.st_size,
+            etag_enabled ? "ETag: " : "Last-Modified: ",
+            etag_enabled ? etag_buf : "");
         write_all(conn->fd, header_buf, header_len);
         return;
+    }
+
+    /* Check if gzip is acceptable */
+    int use_gzip = 0;
+    if (conn->accept_encoding && strstr(conn->accept_encoding, "gzip")) {
+        use_gzip = 1;
     }
 
     int file_fd = open(full_path, O_RDONLY);
@@ -376,13 +471,59 @@ static void handle_request(ConnectionState *conn) {
         return;
     }
 
+    /* For gzip: read file into memory, compress, and send */
+    if (use_gzip && st.st_size < 256 * 1024 && st.st_size > 0) {
+        char *file_data = (char *)malloc(st.st_size);
+        if (file_data) {
+            ssize_t total_read = 0;
+            while (total_read < st.st_size) {
+                ssize_t n = read(file_fd, file_data + total_read, st.st_size - total_read);
+                if (n <= 0) break;
+                total_read += n;
+            }
+            close(file_fd);
+
+            size_t compressed_len = 0;
+            char *compressed = gzip_compress(file_data, total_read, &compressed_len, 6);
+            free(file_data);
+
+            if (compressed) {
+                header_len = snprintf(header_buf, sizeof(header_buf),
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: %s\r\n"
+                    "Content-Length: %zu\r\n"
+                    "Content-Encoding: gzip\r\n"
+                    "Server: ssserve\r\n"
+                    "%s%s\r\n"
+                    "\r\n",
+                    mime_type, compressed_len,
+                    etag_enabled ? "ETag: " : "Last-Modified: ",
+                    etag_enabled ? etag_buf : "");
+                write_all(conn->fd, header_buf, header_len);
+                write_all(conn->fd, compressed, compressed_len);
+                free(compressed);
+                return;
+            }
+            /* gzip failed, fall through to normal send */
+            file_fd = open(full_path, O_RDONLY);
+            if (file_fd < 0) {
+                char response[] = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n";
+                write_all(conn->fd, response, strlen(response));
+                return;
+            }
+        }
+    }
+
     header_len = snprintf(header_buf, sizeof(header_buf),
         "HTTP/1.1 200 OK\r\n"
         "Content-Type: %s\r\n"
         "Content-Length: %ld\r\n"
         "Server: ssserve\r\n"
+        "%s%s\r\n"
         "\r\n",
-        mime_type, (long)st.st_size);
+        mime_type, (long)st.st_size,
+        etag_enabled ? "ETag: " : "Last-Modified: ",
+        etag_enabled ? etag_buf : "");
     write_all(conn->fd, header_buf, header_len);
 
     if (st.st_size > SENDFILE_THRESHOLD) {
@@ -549,7 +690,8 @@ static PyObject *py_serve(PyObject *self, PyObject *args, PyObject *kw) {
     server_config.root_dir[PATH_MAX - 1] = '\0';
     server_config.num_workers = num_workers;
     server_config.running = 1;
-    server_config.config_callback = config_callback; /* Used in Task 5 for redirects/rewrites */
+    server_config.config_callback = config_callback;
+    server_config.etag = etag;
 
     struct epoll_event ev;
     ev.events = EPOLLIN | EPOLLET | EPOLLEXCLUSIVE;
