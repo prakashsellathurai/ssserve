@@ -30,7 +30,7 @@ jobs:
       - name: Check if version needs publishing
         id: check
         run: |
-          version=$(grep '^version = ' pyproject.toml | head -1 | sed 's/^version = "\(.*\)"/\1/')
+          version=$(grep '^version = ' pyproject.toml | head -1 | sed 's/^version = "\(.*\)"/\1/' | tr -d '\r')
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
           if git rev-parse "v$version" >/dev/null 2>&1; then
