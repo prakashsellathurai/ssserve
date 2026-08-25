@@ -48,6 +48,7 @@ typedef struct {
     char *accept_encoding;
     char *if_none_match;
     char *if_modified_since;
+    char *range_header;
 } ConnectionState;
 
 static ServerConfig server_config;
@@ -462,6 +463,11 @@ static int parse_http_request(ConnectionState *conn) {
             while (*conn->if_modified_since == ' ') conn->if_modified_since++;
             char *end = strstr(conn->if_modified_since, "\r\n");
             if (end) *end = '\0';
+        } else if (strncmp(header, "Range:", 6) == 0) {
+            conn->range_header = header + 6;
+            while (*conn->range_header == ' ') conn->range_header++;
+            char *end = strstr(conn->range_header, "\r\n");
+            if (end) *end = '\0';
         }
         header = next_header + 2;
     }
@@ -514,6 +520,28 @@ static int check_callbacks(ConnectionState *conn, char *new_path, size_t new_pat
     }
     Py_DECREF(result);
     PyGILState_Release(gstate);
+    return 0;
+}
+
+static int parse_range(const char *range_header, int file_size, int *start, int *end) {
+    if (!range_header || strncmp(range_header, "bytes=", 6) != 0) return -1;
+    const char *p = range_header + 6;
+    if (*p == '-') {
+        int suffix = atoi(p + 1);
+        if (suffix <= 0 || suffix > file_size) return -1;
+        *start = file_size - suffix;
+        *end = file_size - 1;
+    } else {
+        *start = atoi(p);
+        char *dash = strchr(p, '-');
+        if (!dash) return -1;
+        if (*(dash + 1) == '\0') {
+            *end = file_size - 1;
+        } else {
+            *end = atoi(dash + 1);
+        }
+        if (*start < 0 || *end >= file_size || *start > *end) return -1;
+    }
     return 0;
 }
 
@@ -715,9 +743,16 @@ serve_file:
         return;
     }
 
-    /* Check if gzip is acceptable */
+    /* Check for Range request */
+    int range_start = 0, range_end = 0;
+    int range_valid = 0;
+    if (conn->range_header && parse_range(conn->range_header, (int)st.st_size, &range_start, &range_end) == 0) {
+        range_valid = 1;
+    }
+
+    /* Check if gzip is acceptable (skip gzip for range requests) */
     int use_gzip = 0;
-    if (conn->accept_encoding && strstr(conn->accept_encoding, "gzip")) {
+    if (!range_valid && conn->accept_encoding && strstr(conn->accept_encoding, "gzip")) {
         use_gzip = 1;
     }
 
@@ -771,34 +806,73 @@ serve_file:
         }
     }
 
-    header_len = snprintf(header_buf, sizeof(header_buf),
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: %s\r\n"
-        "Content-Length: %ld\r\n"
-        "Server: ssserve\r\n"
-        "%s%s\r\n"
-        "\r\n",
-        mime_type, (long)st.st_size,
-        etag_enabled ? "ETag: " : "Last-Modified: ",
-        etag_enabled ? etag_buf : date_buf);
-    write_all(conn->fd, header_buf, header_len);
+    if (range_valid) {
+        int range_size = range_end - range_start + 1;
+        header_len = snprintf(header_buf, sizeof(header_buf),
+            "HTTP/1.1 206 Partial Content\r\n"
+            "Content-Type: %s\r\n"
+            "Content-Length: %d\r\n"
+            "Content-Range: bytes %d-%d/%ld\r\n"
+            "Server: ssserve\r\n"
+            "%s%s\r\n"
+            "\r\n",
+            mime_type, range_size, range_start, range_end, (long)st.st_size,
+            etag_enabled ? "ETag: " : "Last-Modified: ",
+            etag_enabled ? etag_buf : date_buf);
+        write_all(conn->fd, header_buf, header_len);
 
-    if (st.st_size > SENDFILE_THRESHOLD) {
-        off_t offset = 0;
-        size_t remaining = st.st_size;
-        while (remaining > 0) {
-            ssize_t sent = sendfile(conn->fd, file_fd, &offset, remaining);
-            if (sent < 0) {
-                if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
-                break;
+        lseek(file_fd, range_start, SEEK_SET);
+        if (range_size > SENDFILE_THRESHOLD) {
+            off_t offset = range_start;
+            size_t remaining = range_size;
+            while (remaining > 0) {
+                ssize_t sent = sendfile(conn->fd, file_fd, &offset, remaining);
+                if (sent < 0) {
+                    if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+                    break;
+                }
+                remaining -= sent;
             }
-            remaining -= sent;
+        } else {
+            char file_buf[BUFFER_SIZE];
+            ssize_t bytes_read;
+            int to_read = range_size;
+            while (to_read > 0 && (bytes_read = read(file_fd, file_buf, sizeof(file_buf))) > 0) {
+                if (bytes_read > to_read) bytes_read = to_read;
+                if (write_all(conn->fd, file_buf, bytes_read) < 0) break;
+                to_read -= bytes_read;
+            }
         }
     } else {
-        char file_buf[BUFFER_SIZE];
-        ssize_t bytes_read;
-        while ((bytes_read = read(file_fd, file_buf, sizeof(file_buf))) > 0) {
-            if (write_all(conn->fd, file_buf, bytes_read) < 0) break;
+        header_len = snprintf(header_buf, sizeof(header_buf),
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: %s\r\n"
+            "Content-Length: %ld\r\n"
+            "Server: ssserve\r\n"
+            "%s%s\r\n"
+            "\r\n",
+            mime_type, (long)st.st_size,
+            etag_enabled ? "ETag: " : "Last-Modified: ",
+            etag_enabled ? etag_buf : date_buf);
+        write_all(conn->fd, header_buf, header_len);
+
+        if (st.st_size > SENDFILE_THRESHOLD) {
+            off_t offset = 0;
+            size_t remaining = st.st_size;
+            while (remaining > 0) {
+                ssize_t sent = sendfile(conn->fd, file_fd, &offset, remaining);
+                if (sent < 0) {
+                    if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+                    break;
+                }
+                remaining -= sent;
+            }
+        } else {
+            char file_buf[BUFFER_SIZE];
+            ssize_t bytes_read;
+            while ((bytes_read = read(file_fd, file_buf, sizeof(file_buf))) > 0) {
+                if (write_all(conn->fd, file_buf, bytes_read) < 0) break;
+            }
         }
     }
 

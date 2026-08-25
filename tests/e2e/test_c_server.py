@@ -425,3 +425,65 @@ def test_c_server_rewrite(c_server_with_config):
     assert resp.status == 200
     body = resp.read().decode()
     assert "App Page" in body
+
+
+@pytest.fixture
+def c_server_range(tmp_path: Path) -> str:
+    try:
+        from ssserve._server import serve
+    except ImportError:
+        pytest.skip("C server extension not built")
+
+    (tmp_path / "file-100kb.bin").write_bytes(b"x" * 102400)
+
+    port = find_free_port()
+    server_thread = threading.Thread(
+        target=serve,
+        args=(port, str(tmp_path)),
+        kwargs={"cors": False, "caching": False, "etag": False},
+        daemon=True,
+    )
+    server_thread.start()
+
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        try:
+            with socket.create_connection(("localhost", port), timeout=0.5) as s:
+                s.sendall(b"GET / HTTP/1.0\r\n\r\n")
+                if b"HTTP/" in s.recv(128):
+                    break
+        except (ConnectionRefusedError, OSError, socket.timeout):
+            time.sleep(0.1)
+    else:
+        pytest.fail(f"C server (range) did not start on port {port} within 5s")
+
+    yield f"http://localhost:{port}"
+
+
+def test_c_server_range_request(c_server_range):
+    """Range header returns 206 Partial Content."""
+    req = urllib.request.Request(f'{c_server_range}/file-100kb.bin',
+                                headers={'Range': 'bytes=0-1023'})
+    resp = urllib.request.urlopen(req)
+    assert resp.status == 206
+    assert resp.headers.get('Content-Range') == 'bytes 0-1023/102400'
+    data = resp.read()
+    assert len(data) == 1024
+
+
+def test_c_server_range_end_only(c_server_range):
+    """Range with only end offset: bytes=-1024."""
+    req = urllib.request.Request(f'{c_server_range}/file-100kb.bin',
+                                headers={'Range': 'bytes=-1024'})
+    resp = urllib.request.urlopen(req)
+    assert resp.status == 206
+    data = resp.read()
+    assert len(data) == 1024
+
+
+def test_c_server_range_invalid(c_server_range):
+    """Invalid Range returns 200 with full file."""
+    req = urllib.request.Request(f'{c_server_range}/file-100kb.bin',
+                                headers={'Range': 'bytes=999999-999999'})
+    resp = urllib.request.urlopen(req)
+    assert resp.status == 200
