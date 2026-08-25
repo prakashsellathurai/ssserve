@@ -97,7 +97,7 @@ static void etag_cache_get(long mtime, long size, char *buf, size_t buf_size) {
     int klen = snprintf(key, sizeof(key), "%ld:%ld", mtime, size);
     for (int i = 0; i < ETAG_CACHE_SIZE; i++) {
         if (etag_cache[i].valid && strncmp(etag_cache[i].key, key, klen) == 0) {
-            strncpy(buf, etag_cache[i].etag, buf_size);
+            snprintf(buf, buf_size, "%s", etag_cache[i].etag);
             return;
         }
     }
@@ -106,7 +106,7 @@ static void etag_cache_get(long mtime, long size, char *buf, size_t buf_size) {
     etag_cache[idx].valid = 1;
     snprintf(etag_cache[idx].key, sizeof(etag_cache[idx].key), "%s", key);
     compute_etag(mtime, size, etag_cache[idx].etag, sizeof(etag_cache[idx].etag));
-    strncpy(buf, etag_cache[idx].etag, buf_size);
+    snprintf(buf, buf_size, "%s", etag_cache[idx].etag);
 }
 
 /* ================================================================
@@ -115,7 +115,7 @@ static void etag_cache_get(long mtime, long size, char *buf, size_t buf_size) {
 #define GZIP_CACHE_SIZE 512
 
 typedef struct {
-    char key[128];
+    char key[256];
     char *data;
     size_t data_len;
     int valid;
@@ -183,7 +183,7 @@ static void file_cache_set(const char *path, const char *data, size_t data_len, 
     file_cache_clock++;
     if (file_cache[idx].valid) free(file_cache[idx].data);
     file_cache[idx].valid = 1;
-    strncpy(file_cache[idx].path, path, PATH_MAX - 1);
+    snprintf(file_cache[idx].path, sizeof(file_cache[idx].path), "%s", path);
     file_cache[idx].data = (char *)malloc(data_len);
     if (file_cache[idx].data) {
         memcpy(file_cache[idx].data, data, data_len);
@@ -524,7 +524,7 @@ static void send_error_page(int client_fd, int status, const char *root_dir) {
 }
 
 static void send_error_page_for_file(int client_fd, int status, const char *root_dir) {
-    char error_path[PATH_MAX];
+    char error_path[PATH_MAX + 32];
     snprintf(error_path, sizeof(error_path), "%s/%d.html", root_dir, status);
 
     struct stat st;
@@ -583,10 +583,9 @@ static void render_listing(int client_fd, const char *fs_path, const char *url_p
             if (strcmp(ent->d_name, ".DS_Store") == 0) continue;
             if (strcmp(ent->d_name, ".git") == 0) continue;
         }
-        strncpy(entries[count].name, ent->d_name, sizeof(entries[count].name) - 1);
-        entries[count].name[sizeof(entries[count].name) - 1] = '\0';
+        snprintf(entries[count].name, sizeof(entries[count].name), "%s", ent->d_name);
 
-        char entry_path[PATH_MAX];
+        char entry_path[PATH_MAX + 256];
         snprintf(entry_path, sizeof(entry_path), "%s/%s", fs_path, ent->d_name);
         struct stat st;
         if (stat(entry_path, &st) == 0) {
@@ -626,7 +625,7 @@ static void render_listing(int client_fd, const char *fs_path, const char *url_p
         body[body_len] = '\0'; \
     } while(0)
 
-    char tmp[1024];
+    char tmp[4096];
     snprintf(tmp, sizeof(tmp),
         "<!DOCTYPE html>\n<html>\n<head>\n"
         "<meta charset=\"UTF-8\">\n"
@@ -1118,11 +1117,11 @@ static void handle_request(ConnectionState *conn) {
         }
         /* SPA fallback: serve index.html for 404 */
         if (server_config.single) {
-            char index_path[PATH_MAX];
+            char index_path[PATH_MAX + 32];
             snprintf(index_path, sizeof(index_path), "%s/index.html", server_config.root_dir);
             if (stat(index_path, &st) == 0 && S_ISREG(st.st_mode)) {
                 snprintf(full_path, sizeof(full_path), "%s", index_path);
-                snprintf(conn->path, MAX_PATH, "/index.html");
+                snprintf(conn->path, sizeof(conn->path), "/index.html");
                 goto serve_file;
             }
         }
@@ -1201,15 +1200,15 @@ static void handle_request(ConnectionState *conn) {
         }
 
         /* Check for index.html */
-        char index_path[PATH_MAX];
+        char index_path[PATH_MAX + 32];
         snprintf(index_path, sizeof(index_path), "%s/index.html", full_path);
         if (stat(index_path, &st) == 0) {
             /* Build URL path for header matching: normalized.rstrip("/") + "/index.html" */
             size_t norm_len = strlen(normalized);
             if (norm_len > 0 && normalized[norm_len - 1] == '/') {
-                snprintf(conn->path, MAX_PATH, "%sindex.html", normalized);
+                snprintf(conn->path, sizeof(conn->path), "%sindex.html", normalized);
             } else {
-                snprintf(conn->path, MAX_PATH, "%s/index.html", normalized);
+                snprintf(conn->path, sizeof(conn->path), "%s/index.html", normalized);
             }
             snprintf(full_path, sizeof(full_path), "%s", index_path);
             goto serve_file;
