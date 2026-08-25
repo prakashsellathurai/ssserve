@@ -131,6 +131,7 @@ def _print_startup(
 @click.option("--no-port-switching", is_flag=True, help="Don't switch to another port when port is taken")
 @click.option("-r", "--live-reload", is_flag=True, help="Enable live reload on file changes")
 @click.option("--profile", type=str, default=None, help="Dump cProfile stats to this file on shutdown")
+@click.option("--python-server", is_flag=True, help="Use Python HTTP server instead of C server")
 @click.version_option(version=__version__, prog_name="ssserve")
 def main(
     path: str,
@@ -150,6 +151,7 @@ def main(
     no_port_switching: bool,
     live_reload: bool,
     profile: str | None,
+    python_server: bool,
 ) -> None:
     global _profiler, _profile_path
     if profile:
@@ -212,36 +214,56 @@ def main(
 
     ssl_active = ssl_cert is not None and ssl_key is not None
 
-    if len(listeners) == 1:
-        addr, port_switched = listeners[0]
-        _print_startup(addr, cors, caching, ssl_active, no_port_switching, no_compression, port_switched)
-        server = _create_server(addr, ServeHandler, ssl_cert, ssl_key, ssl_pass)
+    if not python_server:
         try:
-            server.serve_forever()
-        except KeyboardInterrupt:
-            click.echo("\n  Shutting down...")
-            server.shutdown()
-    else:
-        servers = []
-        for addr, port_switched in listeners:
+            from ssserve._server import serve
+            click.echo("  Using C server (epoll + thread pool)")
+            for addr, port_switched in listeners:
+                _print_startup(addr, cors, caching, ssl_active, no_port_switching, no_compression, port_switched)
+                serve(
+                    port=addr.port,
+                    root_dir=root_dir,
+                    cors=cors,
+                    caching=caching,
+                    etag=cfg.etag,
+                    no_compression=no_compression,
+                    symlinks=symlinks,
+                )
+        except ImportError:
+            click.echo("  C server extension not available, falling back to Python server", err=True)
+            python_server = True
+
+    if python_server:
+        if len(listeners) == 1:
+            addr, port_switched = listeners[0]
             _print_startup(addr, cors, caching, ssl_active, no_port_switching, no_compression, port_switched)
             server = _create_server(addr, ServeHandler, ssl_cert, ssl_key, ssl_pass)
-            servers.append(server)
-
-        click.echo(f"  Serving {len(servers)} listeners")
-        click.echo("")
-
-        try:
-            for server in servers:
-                import threading
-                t = threading.Thread(target=server.serve_forever, daemon=True)
-                t.start()
-            while True:
-                time.sleep(3600)
-        except KeyboardInterrupt:
-            click.echo("\n  Shutting down...")
-            for server in servers:
+            try:
+                server.serve_forever()
+            except KeyboardInterrupt:
+                click.echo("\n  Shutting down...")
                 server.shutdown()
+        else:
+            servers = []
+            for addr, port_switched in listeners:
+                _print_startup(addr, cors, caching, ssl_active, no_port_switching, no_compression, port_switched)
+                server = _create_server(addr, ServeHandler, ssl_cert, ssl_key, ssl_pass)
+                servers.append(server)
+
+            click.echo(f"  Serving {len(servers)} listeners")
+            click.echo("")
+
+            try:
+                for server in servers:
+                    import threading
+                    t = threading.Thread(target=server.serve_forever, daemon=True)
+                    t.start()
+                while True:
+                    time.sleep(3600)
+            except KeyboardInterrupt:
+                click.echo("\n  Shutting down...")
+                for server in servers:
+                    server.shutdown()
 
 
 if __name__ == "__main__":
