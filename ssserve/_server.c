@@ -1596,7 +1596,7 @@ static void *worker_thread(void *arg) {
                     setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
 
                     struct epoll_event ev;
-                    ev.events = EPOLLIN | EPOLLET;
+                    ev.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
                     ev.data.fd = client_fd;
                     epoll_ctl(server_config.epoll_fd, EPOLL_CTL_ADD, client_fd, &ev);
                 }
@@ -1608,29 +1608,45 @@ static void *worker_thread(void *arg) {
 
                 /* Drain all available data (edge-triggered requires EAGAIN loop) */
                 ssize_t total = 0;
+                int eof = 0;
                 while (1) {
                     ssize_t n = read(client_fd, conn.buffer + total, BUFFER_SIZE - 1 - total);
                     if (n < 0) {
-                        if (errno == EAGAIN || errno == EWOULDBLOCK) break;
                         if (errno == EINTR) continue;
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+                        eof = 1;
                         break;
                     }
-                    if (n == 0) break;
+                    if (n == 0) {
+                        eof = 1;
+                        break;
+                    }
                     total += n;
                     if (total >= BUFFER_SIZE - 1) break;
                 }
 
                 if (total > 0) {
-                    conn.buf_len = total;
+                    conn.buf_len = (int)total;
                     conn.buffer[total] = '\0';
 
                     if (parse_http_request(&conn) == 0) {
                         handle_request(&conn);
-                        if (!should_close_connection(&conn)) {
-                            /* Keep-alive: don't close, wait for next request */
+                        if (!should_close_connection(&conn) && !eof) {
+                            /* Re-arm socket for next keep-alive request */
+                            struct epoll_event ev;
+                            ev.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
+                            ev.data.fd = client_fd;
+                            epoll_ctl(server_config.epoll_fd, EPOLL_CTL_MOD, client_fd, &ev);
                             continue;
                         }
                     }
+                } else if (!eof) {
+                    /* Spurious wakeup or no data yet, re-arm socket */
+                    struct epoll_event ev;
+                    ev.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
+                    ev.data.fd = client_fd;
+                    epoll_ctl(server_config.epoll_fd, EPOLL_CTL_MOD, client_fd, &ev);
+                    continue;
                 }
 
                 epoll_ctl(server_config.epoll_fd, EPOLL_CTL_DEL, client_fd, NULL);
