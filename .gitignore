@@ -8,3 +8,4 @@ __pycache__/
 !/.asv/results/
 tests/profiles/
 .worktrees/
+.env
