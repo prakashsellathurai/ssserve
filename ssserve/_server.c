@@ -102,6 +102,91 @@ static void etag_cache_get(long mtime, long size, char *buf, size_t buf_size) {
     strncpy(buf, etag_cache[idx].etag, buf_size);
 }
 
+/* ================================================================
+ *  Gzip cache — cache compressed responses for small files
+ * ================================================================ */
+#define GZIP_CACHE_SIZE 512
+
+typedef struct {
+    char key[128];
+    char *data;
+    size_t data_len;
+    int valid;
+} GzipCacheEntry;
+
+static GzipCacheEntry gzip_cache[GZIP_CACHE_SIZE];
+static int gzip_cache_clock = 0;
+
+static const char *gzip_cache_get(const char *key, size_t *out_len) {
+    for (int i = 0; i < GZIP_CACHE_SIZE; i++) {
+        if (gzip_cache[i].valid && strcmp(gzip_cache[i].key, key) == 0) {
+            *out_len = gzip_cache[i].data_len;
+            return gzip_cache[i].data;
+        }
+    }
+    return NULL;
+}
+
+static void gzip_cache_set(const char *key, const char *data, size_t data_len) {
+    int idx = gzip_cache_clock % GZIP_CACHE_SIZE;
+    gzip_cache_clock++;
+    if (gzip_cache[idx].valid) free(gzip_cache[idx].data);
+    gzip_cache[idx].valid = 1;
+    snprintf(gzip_cache[idx].key, sizeof(gzip_cache[idx].key), "%s", key);
+    gzip_cache[idx].data = (char *)malloc(data_len);
+    if (gzip_cache[idx].data) {
+        memcpy(gzip_cache[idx].data, data, data_len);
+        gzip_cache[idx].data_len = data_len;
+    } else {
+        gzip_cache[idx].valid = 0;
+    }
+}
+
+/* ================================================================
+ *  File content cache — cache file data for small files
+ * ================================================================ */
+#define FILE_CACHE_SIZE 128
+#define FILE_CACHE_MAX_SIZE (256 * 1024)
+
+typedef struct {
+    char path[PATH_MAX];
+    char *data;
+    size_t data_len;
+    time_t mtime;
+    int valid;
+} FileCacheEntry;
+
+static FileCacheEntry file_cache[FILE_CACHE_SIZE];
+static int file_cache_clock = 0;
+
+static const char *file_cache_get(const char *path, time_t mtime, size_t *out_len) {
+    for (int i = 0; i < FILE_CACHE_SIZE; i++) {
+        if (file_cache[i].valid &&
+            file_cache[i].mtime == mtime &&
+            strcmp(file_cache[i].path, path) == 0) {
+            *out_len = file_cache[i].data_len;
+            return file_cache[i].data;
+        }
+    }
+    return NULL;
+}
+
+static void file_cache_set(const char *path, const char *data, size_t data_len, time_t mtime) {
+    int idx = file_cache_clock % FILE_CACHE_SIZE;
+    file_cache_clock++;
+    if (file_cache[idx].valid) free(file_cache[idx].data);
+    file_cache[idx].valid = 1;
+    strncpy(file_cache[idx].path, path, PATH_MAX - 1);
+    file_cache[idx].data = (char *)malloc(data_len);
+    if (file_cache[idx].data) {
+        memcpy(file_cache[idx].data, data, data_len);
+        file_cache[idx].data_len = data_len;
+        file_cache[idx].mtime = mtime;
+    } else {
+        file_cache[idx].valid = 0;
+    }
+}
+
 enum http_method { HTTP_GET = 0, HTTP_HEAD, HTTP_OPTIONS };
 
 static volatile sig_atomic_t g_shutdown = 0;
@@ -1214,8 +1299,28 @@ serve_file:
         if (file_data) {
             close(file_fd);
 
+            /* Try gzip cache first */
+            char gzip_key[256];
+            snprintf(gzip_key, sizeof(gzip_key), "%s%ld:%ld",
+                     injected ? "lr:" : "", (long)st.st_mtime, (long)st.st_size);
+            size_t cached_gzip_len = 0;
+            const char *cached_gzip = gzip_cache_get(gzip_key, &cached_gzip_len);
+
+            char *compressed = NULL;
             size_t compressed_len = 0;
-            char *compressed = gzip_compress(file_data, file_data_len, &compressed_len, 6);
+
+            if (cached_gzip) {
+                compressed = (char *)malloc(cached_gzip_len);
+                if (compressed) {
+                    memcpy(compressed, cached_gzip, cached_gzip_len);
+                    compressed_len = cached_gzip_len;
+                }
+            }
+
+            if (!compressed) {
+                compressed = gzip_compress(file_data, file_data_len, &compressed_len, 6);
+                if (compressed) gzip_cache_set(gzip_key, compressed, compressed_len);
+            }
             if (!file_data_from_inject) free(file_data);
 
             if (compressed) {
@@ -1305,6 +1410,13 @@ serve_file:
             write_all(conn->fd, injected_data, injected_len);
             free(injected_data);
         } else {
+            /* Try file cache for small files */
+            size_t cached_file_len = 0;
+            const char *cached_file = NULL;
+            if (st.st_size > 0 && st.st_size <= FILE_CACHE_MAX_SIZE) {
+                cached_file = file_cache_get(full_path, st.st_mtime, &cached_file_len);
+            }
+
             header_len = snprintf(header_buf, sizeof(header_buf),
                 "HTTP/1.1 200 OK\r\n"
                 "Content-Type: %s\r\n"
@@ -1320,7 +1432,10 @@ serve_file:
             write_extra_headers(conn->fd, conn->origin, conn->path);
             write_all(conn->fd, "\r\n", 2);
 
-            if (st.st_size > SENDFILE_THRESHOLD) {
+            if (cached_file) {
+                /* Serve from file cache */
+                write_all(conn->fd, cached_file, cached_file_len);
+            } else if (st.st_size > SENDFILE_THRESHOLD) {
                 off_t offset = 0;
                 size_t remaining = st.st_size;
                 while (remaining > 0) {
@@ -1332,10 +1447,24 @@ serve_file:
                     remaining -= sent;
                 }
             } else {
-                char file_buf[BUFFER_SIZE];
-                ssize_t bytes_read;
-                while ((bytes_read = read(file_fd, file_buf, sizeof(file_buf))) > 0) {
-                    if (write_all(conn->fd, file_buf, bytes_read) < 0) break;
+                /* Small file, not cached — read into cache then serve */
+                char *file_data = (char *)malloc(st.st_size);
+                if (file_data) {
+                    ssize_t total_read = 0;
+                    while (total_read < st.st_size) {
+                        ssize_t n = read(file_fd, file_data + total_read, st.st_size - total_read);
+                        if (n <= 0) break;
+                        total_read += n;
+                    }
+                    file_cache_set(full_path, file_data, total_read, st.st_mtime);
+                    write_all(conn->fd, file_data, total_read);
+                    free(file_data);
+                } else {
+                    char file_buf[BUFFER_SIZE];
+                    ssize_t bytes_read;
+                    while ((bytes_read = read(file_fd, file_buf, sizeof(file_buf))) > 0) {
+                        if (write_all(conn->fd, file_buf, bytes_read) < 0) break;
+                    }
                 }
             }
         }
