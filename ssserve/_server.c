@@ -46,6 +46,17 @@ typedef struct {
 
 static ServerConfig server_config;
 
+enum http_method { HTTP_GET = 0, HTTP_HEAD, HTTP_OPTIONS };
+
+static volatile sig_atomic_t g_shutdown = 0;
+
+static void signal_handler(int signum) {
+    (void)signum;
+    g_shutdown = 1;
+}
+
+_Static_assert(sizeof(ConnectionState) <= 16384, "ConnectionState too large");
+
 static ssize_t write_all(int fd, const void *buf, size_t len) {
     const char *p = (const char *)buf;
     size_t remaining = len;
@@ -85,9 +96,9 @@ static int parse_http_request(ConnectionState *conn) {
     if (!method_end) return -1;
 
     *method_end = '\0';
-    if (strcmp(conn->buffer, "GET") == 0) conn->method = 0;
-    else if (strcmp(conn->buffer, "HEAD") == 0) conn->method = 1;
-    else if (strcmp(conn->buffer, "OPTIONS") == 0) conn->method = 2;
+    if (strcmp(conn->buffer, "GET") == 0) conn->method = HTTP_GET;
+    else if (strcmp(conn->buffer, "HEAD") == 0) conn->method = HTTP_HEAD;
+    else if (strcmp(conn->buffer, "OPTIONS") == 0) conn->method = HTTP_OPTIONS;
     else return -1;
 
     char *path_start = method_end + 1;
@@ -104,7 +115,7 @@ static int parse_http_request(ConnectionState *conn) {
     char *header = headers_start + 2;
     while (header && *header && strncmp(header, "\r\n", 2) != 0) {
         if (strncmp(header, "Host:", 5) == 0) {
-            conn->host = header + 5;
+            conn->host = header + 5; /* Points into conn->buffer, valid for conn lifetime */
             while (*conn->host == ' ') conn->host++;
             char *end = strstr(conn->host, "\r\n");
             if (end) *end = '\0';
@@ -118,7 +129,7 @@ static int parse_http_request(ConnectionState *conn) {
 }
 
 static void handle_request(ConnectionState *conn) {
-    if (conn->method == 2) {
+    if (conn->method == HTTP_OPTIONS) {
         char response[] =
             "HTTP/1.1 200 OK\r\n"
             "Allow: GET, HEAD, OPTIONS\r\n"
@@ -188,14 +199,14 @@ static void handle_request(ConnectionState *conn) {
             write_all(conn->fd, response, strlen(response));
             return;
         }
-        strcpy(full_path, index_path);
+        snprintf(full_path, sizeof(full_path), "%s", index_path);
     }
 
     const char *mime_type = get_mime_type(full_path);
     char header_buf[512];
     int header_len;
 
-    if (conn->method == 1) {
+    if (conn->method == HTTP_HEAD) {
         header_len = snprintf(header_buf, sizeof(header_buf),
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: %s\r\n"
@@ -249,7 +260,7 @@ static void *worker_thread(void *arg) {
     (void)arg;
     struct epoll_event events[MAX_EVENTS];
 
-    while (server_config.running) {
+    while (!g_shutdown) {
         int nfds = epoll_wait(server_config.epoll_fd, events, MAX_EVENTS, 1000);
         if (nfds < 0) {
             if (errno == EINTR) continue;
@@ -267,7 +278,10 @@ static void *worker_thread(void *arg) {
                     }
 
                     int flags = fcntl(client_fd, F_GETFL, 0);
-                    fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
+                    if (flags < 0 || fcntl(client_fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+                        close(client_fd);
+                        continue;
+                    }
 
                     struct epoll_event ev;
                     ev.events = EPOLLIN | EPOLLET;
@@ -312,15 +326,6 @@ static void *worker_thread(void *arg) {
     return NULL;
 }
 
-static void signal_handler(int signum) {
-    (void)signum;
-    server_config.running = 0;
-    if (server_config.listen_fd >= 0) {
-        close(server_config.listen_fd);
-        server_config.listen_fd = -1;
-    }
-}
-
 static PyObject *py_serve(PyObject *self, PyObject *args, PyObject *kw) {
     int port;
     const char *root_dir;
@@ -354,10 +359,20 @@ static PyObject *py_serve(PyObject *self, PyObject *args, PyObject *kw) {
     }
 
     int opt = 1;
-    setsockopt(server_config.listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    if (setsockopt(server_config.listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        close(server_config.listen_fd);
+        close(server_config.epoll_fd);
+        PyErr_SetFromErrno(PyExc_OSError);
+        return NULL;
+    }
 
     int flags = fcntl(server_config.listen_fd, F_GETFL, 0);
-    fcntl(server_config.listen_fd, F_SETFL, flags | O_NONBLOCK);
+    if (flags < 0 || fcntl(server_config.listen_fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        close(server_config.listen_fd);
+        close(server_config.epoll_fd);
+        PyErr_SetFromErrno(PyExc_OSError);
+        return NULL;
+    }
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));

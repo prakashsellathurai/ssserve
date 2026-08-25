@@ -215,23 +215,27 @@ def main(
     ssl_active = ssl_cert is not None and ssl_key is not None
 
     if not python_server:
-        try:
-            from ssserve._server import serve
-            click.echo("  Using C server (epoll + thread pool)")
-            for addr, port_switched in listeners:
-                _print_startup(addr, cors, caching, ssl_active, no_port_switching, no_compression, port_switched)
-                serve(
-                    port=addr.port,
-                    root_dir=root_dir,
-                    cors=cors,
-                    caching=caching,
-                    etag=cfg.etag,
-                    no_compression=no_compression,
-                    symlinks=symlinks,
-                )
-        except ImportError:
-            click.echo("  C server extension not available, falling back to Python server", err=True)
+        if len(listeners) > 1:
+            click.echo("  Warning: C server does not support multiple listeners, using Python server", err=True)
             python_server = True
+        else:
+            try:
+                from ssserve._server import serve
+                click.echo("  Using C server (epoll + thread pool)")
+                for addr, port_switched in listeners:
+                    _print_startup(addr, cors, caching, ssl_active, no_port_switching, no_compression, port_switched)
+                    serve(
+                        port=addr.port,
+                        root_dir=root_dir,
+                        cors=cors,
+                        caching=caching,
+                        etag=cfg.etag,
+                        no_compression=no_compression,
+                        symlinks=symlinks,
+                    )
+            except ImportError:
+                click.echo("  Warning: C server not available, using Python server", err=True)
+                python_server = True
 
     if python_server:
         if len(listeners) == 1:
