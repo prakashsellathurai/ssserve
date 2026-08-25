@@ -194,6 +194,7 @@ def _print_startup(
 @click.option("-r", "--live-reload", is_flag=True, help="Enable live reload on file changes")
 @click.option("--profile", type=str, default=None, help="Dump cProfile stats to this file on shutdown")
 @click.option("--python-server", is_flag=True, help="Use Python HTTP server instead of C server")
+@click.option("--workers", type=int, default=None, help="Worker threads (default: max(4, CPU count))")
 @click.version_option(version=__version__, prog_name="ssserve")
 def main(
     path: str,
@@ -214,6 +215,7 @@ def main(
     live_reload: bool,
     profile: str | None,
     python_server: bool,
+    workers: int | None,
 ) -> None:
     global _profiler, _profile_path
     if profile:
@@ -223,6 +225,9 @@ def main(
         atexit.register(_dump_profile)
         signal.signal(signal.SIGTERM, _handle_sigterm)
     root_dir = os.path.abspath(path) if path else os.getcwd()
+
+    if workers is None:
+        workers = max(4, os.cpu_count() or 4)
 
     if not os.path.isdir(root_dir):
         click.echo(f"Error: {path} is not a directory", err=True)
@@ -296,6 +301,7 @@ def main(
                     serve(
                         port=addr.port,
                         root_dir=root_dir,
+                        num_workers=workers,
                         cors=cors,
                         caching=caching,
                         etag=cfg.etag,
