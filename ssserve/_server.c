@@ -6,6 +6,7 @@
 #include <sys/sendfile.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <netinet/tcp.h>
 #include <pthread.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -69,6 +70,37 @@ typedef struct {
 } ConnectionState;
 
 static ServerConfig server_config;
+
+/* ================================================================
+ *  ETag cache — fixed-size circular buffer, O(n) lookup
+ * ================================================================ */
+#define ETAG_CACHE_SIZE 2048
+
+typedef struct {
+    char key[128];
+    char etag[64];
+    int valid;
+} ETagCacheEntry;
+
+static ETagCacheEntry etag_cache[ETAG_CACHE_SIZE];
+static int etag_cache_clock = 0;
+
+static void etag_cache_get(long mtime, long size, char *buf, size_t buf_size) {
+    char key[128];
+    int klen = snprintf(key, sizeof(key), "%ld:%ld", mtime, size);
+    for (int i = 0; i < ETAG_CACHE_SIZE; i++) {
+        if (etag_cache[i].valid && strncmp(etag_cache[i].key, key, klen) == 0) {
+            strncpy(buf, etag_cache[i].etag, buf_size);
+            return;
+        }
+    }
+    int idx = etag_cache_clock % ETAG_CACHE_SIZE;
+    etag_cache_clock++;
+    etag_cache[idx].valid = 1;
+    snprintf(etag_cache[idx].key, sizeof(etag_cache[idx].key), "%s", key);
+    snprintf(etag_cache[idx].etag, sizeof(etag_cache[idx].etag), "\"%ld-%ld\"", mtime, size);
+    strncpy(buf, etag_cache[idx].etag, buf_size);
+}
 
 enum http_method { HTTP_GET = 0, HTTP_HEAD, HTTP_OPTIONS };
 
@@ -1035,7 +1067,7 @@ serve_file:
     char etag_buf[64] = {0};
     char date_buf[64] = {0};
     if (etag_enabled) {
-        compute_etag((long)st.st_mtime, (long)st.st_size, etag_buf, sizeof(etag_buf));
+        etag_cache_get((long)st.st_mtime, (long)st.st_size, etag_buf, sizeof(etag_buf));
     } else {
         struct tm *gmt = gmtime(&st.st_mtime);
         strftime(date_buf, sizeof(date_buf), "%a, %d %b %Y %H:%M:%S GMT", gmt);
@@ -1339,6 +1371,9 @@ static void *worker_thread(void *arg) {
                         continue;
                     }
 
+                    int one = 1;
+                    setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+
                     struct epoll_event ev;
                     ev.events = EPOLLIN | EPOLLET;
                     ev.data.fd = client_fd;
@@ -1452,7 +1487,7 @@ static PyObject *py_serve(PyObject *self, PyObject *args, PyObject *kw) {
         return NULL;
     }
 
-    if (listen(server_config.listen_fd, 128) < 0) {
+    if (listen(server_config.listen_fd, SOMAXCONN) < 0) {
         close(server_config.listen_fd);
         close(server_config.epoll_fd);
         PyErr_SetFromErrno(PyExc_OSError);
