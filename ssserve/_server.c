@@ -66,6 +66,8 @@ typedef struct {
     char *if_modified_since;
     char *range_header;
     char *origin;
+    char *connection_header;
+    int http_version;  /* 0 = HTTP/1.0, 1 = HTTP/1.1 */
 } ConnectionState;
 
 static ServerConfig server_config;
@@ -548,6 +550,10 @@ static int parse_http_request(ConnectionState *conn) {
     strncpy(conn->path, path_start, MAX_PATH - 1);
     conn->path[MAX_PATH - 1] = '\0';
 
+    /* Parse HTTP version */
+    char *version_start = path_end + 1;
+    conn->http_version = (strncmp(version_start, "HTTP/1.1", 8) == 0) ? 1 : 0;
+
     char *headers_start = strstr(path_end + 1, "\r\n");
     if (!headers_start) return -1;
 
@@ -585,6 +591,11 @@ static int parse_http_request(ConnectionState *conn) {
             conn->origin = header + 7;
             while (*conn->origin == ' ') conn->origin++;
             char *end = strstr(conn->origin, "\r\n");
+            if (end) *end = '\0';
+        } else if (strncmp(header, "Connection:", 11) == 0) {
+            conn->connection_header = header + 11;
+            while (*conn->connection_header == ' ') conn->connection_header++;
+            char *end = strstr(conn->connection_header, "\r\n");
             if (end) *end = '\0';
         }
         header = next_header + 2;
@@ -1312,6 +1323,15 @@ serve_file:
     close(file_fd);
 }
 
+static int should_close_connection(ConnectionState *conn) {
+    if (conn->connection_header) {
+        if (strcasestr(conn->connection_header, "close")) return 1;
+        if (strcasestr(conn->connection_header, "keep-alive")) return 0;
+    }
+    /* HTTP/1.0 default: close; HTTP/1.1 default: keep-alive */
+    return (conn->http_version == 0) ? 1 : 0;
+}
+
 static void *worker_thread(void *arg) {
     (void)arg;
     struct epoll_event events[MAX_EVENTS];
@@ -1370,6 +1390,10 @@ static void *worker_thread(void *arg) {
 
                     if (parse_http_request(&conn) == 0) {
                         handle_request(&conn);
+                        if (!should_close_connection(&conn)) {
+                            /* Keep-alive: don't close, wait for next request */
+                            continue;
+                        }
                     }
                 }
 
