@@ -68,11 +68,11 @@ static void ht_remove(CCache *c, const char *key) {
         if (idx < 0) return;
         if (c->entries[idx].key && strcmp(c->entries[idx].key, key) == 0) {
             c->ht[h] = -1;
-            int gap = h;
-            for (int j = (h + 1) % (unsigned int)c->ht_cap; ; j = (j + 1) % (unsigned int)c->ht_cap) {
+            int gap = (int)h;
+            for (int j = (int)((h + 1) % (unsigned int)c->ht_cap); ; j = (int)((j + 1) % (unsigned int)c->ht_cap)) {
                 if (c->ht[j] < 0) break;
                 const char *k2 = c->entries[c->ht[j]].key;
-                unsigned int h2 = fnv1a(k2) % (unsigned int)c->ht_cap;
+                int h2 = (int)(fnv1a(k2) % (unsigned int)c->ht_cap);
                 int d_cur = (j >= h2) ? j - h2 : c->ht_cap - h2 + j;
                 int d_gap = (gap >= h2) ? gap - h2 : c->ht_cap - h2 + gap;
                 if (d_cur < d_gap) { c->ht[gap] = c->ht[j]; c->ht[j] = -1; gap = j; }

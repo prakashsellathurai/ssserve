@@ -20,6 +20,7 @@
 #include <zlib.h>
 #include <dirent.h>
 #include <fnmatch.h>
+#include <stdarg.h>
 
 #define MAX_EVENTS 64
 #define MAX_CONNECTIONS 1024
@@ -73,6 +74,10 @@ typedef struct {
 
 static ServerConfig server_config;
 
+static int compute_etag(long mtime, long size, char *buf, size_t buf_size) {
+    return snprintf(buf, buf_size, "\"%ld-%ld\"", mtime, size);
+}
+
 /* ================================================================
  *  ETag cache — fixed-size circular buffer
  * ================================================================ */
@@ -100,7 +105,7 @@ static void etag_cache_get(long mtime, long size, char *buf, size_t buf_size) {
     etag_cache_clock++;
     etag_cache[idx].valid = 1;
     snprintf(etag_cache[idx].key, sizeof(etag_cache[idx].key), "%s", key);
-    snprintf(etag_cache[idx].etag, sizeof(etag_cache[idx].etag), "\"%ld-%ld\"", mtime, size);
+    compute_etag(mtime, size, etag_cache[idx].etag, sizeof(etag_cache[idx].etag));
     strncpy(buf, etag_cache[idx].etag, buf_size);
 }
 
@@ -215,6 +220,50 @@ static ssize_t write_all(int fd, const void *buf, size_t len) {
     return (ssize_t)len;
 }
 
+#define HEADER_BUF_SIZE 4096
+
+typedef struct {
+    char data[HEADER_BUF_SIZE];
+    size_t len;
+} HeaderBuf;
+
+static inline void hb_init(HeaderBuf *hb) {
+    hb->len = 0;
+    hb->data[0] = '\0';
+}
+
+static inline void hb_append(HeaderBuf *hb, const char *str) {
+    size_t slen = strlen(str);
+    if (hb->len + slen < HEADER_BUF_SIZE) {
+        memcpy(hb->data + hb->len, str, slen);
+        hb->len += slen;
+        hb->data[hb->len] = '\0';
+    }
+}
+
+static inline void hb_appendf(HeaderBuf *hb, const char *fmt, ...) {
+    if (hb->len >= HEADER_BUF_SIZE - 1) return;
+    va_list args;
+    va_start(args, fmt);
+    int n = vsnprintf(hb->data + hb->len, HEADER_BUF_SIZE - hb->len, fmt, args);
+    va_end(args);
+    if (n > 0) {
+        hb->len += (size_t)n;
+        if (hb->len >= HEADER_BUF_SIZE) {
+            hb->len = HEADER_BUF_SIZE - 1;
+            hb->data[hb->len] = '\0';
+        }
+    }
+}
+
+static inline void hb_crlf(HeaderBuf *hb) {
+    hb_append(hb, "\r\n");
+}
+
+static inline ssize_t hb_write(int fd, const HeaderBuf *hb) {
+    return write_all(fd, hb->data, hb->len);
+}
+
 static const char *get_mime_type(const char *path) {
     const char *dot = strrchr(path, '.');
     if (!dot) return "application/octet-stream";
@@ -232,10 +281,6 @@ static const char *get_mime_type(const char *path) {
     if (strcmp(ext, "pdf") == 0) return "application/pdf";
     if (strcmp(ext, "bin") == 0) return "application/octet-stream";
     return "application/octet-stream";
-}
-
-static int compute_etag(long mtime, long size, char *buf, size_t buf_size) {
-    return snprintf(buf, buf_size, "\"%ld-%ld\"", mtime, size);
 }
 
 static char *gzip_compress(const char *data, size_t data_len, size_t *out_len, int level) {
@@ -438,6 +483,7 @@ static int cmp_dir_entry(const void *a, const void *b) {
 }
 
 static void write_extra_headers(int client_fd, const char *origin, const char *url_path);
+static void write_extra_headers_buf(HeaderBuf *hb, const char *origin, const char *url_path);
 static void apply_common_headers(int client_fd);
 static void apply_common_headers_buf(HeaderBuf *hb);
 static void apply_cors_headers(int client_fd, const char *origin);
@@ -587,7 +633,7 @@ static void render_listing(int client_fd, const char *fs_path, const char *url_p
         "<title>Index of %s</title>\n"
         "<style>\n"
         "body { font-family: sans-serif; margin: 2em; }\n"
-        "table { border-collapse: collapse; width: 100%; }\n"
+        "table { border-collapse: collapse; width: 100%%; }\n"
         "th, td { text-align: left; padding: 0.5em 1em; }\n"
         "th { border-bottom: 2px solid #333; }\n"
         "tr:hover { background: #f5f5f5; }\n"
