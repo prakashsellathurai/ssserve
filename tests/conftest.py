@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import json
 import os
+import pstats
+import shutil
 import socket
 import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 import pytest
+
+PROFILES_DIR = Path(__file__).resolve().parent / "profiles"
 
 
 def find_free_port() -> int:
@@ -36,6 +41,11 @@ def _populate_test_dir(base: Path) -> None:
     dl = base / "downloads"
     dl.mkdir()
     (dl / "readme.txt").write_text("hello world")
+
+    many = base / "many-files"
+    many.mkdir()
+    for i in range(100):
+        (many / f"file-{i:03d}.txt").write_text(f"file {i}")
 
 
 def _wait_for_server(port: int, proc: subprocess.Popen, timeout: float = 15.0) -> None:
@@ -66,6 +76,7 @@ def _start_server(
     serve_dir: Path,
     extra_args: list[str] | None = None,
     config: dict | None = None,
+    profile_path: str | None = None,
 ) -> tuple[subprocess.Popen, int]:
     if config:
         (serve_dir / "serve.json").write_text(json.dumps(config))
@@ -75,6 +86,7 @@ def _start_server(
     args = (
         [python, "-m", "ssserve", str(serve_dir), "-l", str(port), "--no-port-switching", "-L"]
         + (extra_args or [])
+        + (["--profile", profile_path] if profile_path else [])
     )
     proc = subprocess.Popen(
         args,
@@ -114,3 +126,134 @@ def server_factory() -> type:
             _stop_server(p)
         except Exception:
             pass
+
+
+def _find_server_pid(port: int) -> int | None:
+    import psutil
+
+    for conn in psutil.net_connections():
+        if hasattr(conn.laddr, "port") and conn.laddr.port == port and conn.status == "LISTEN":
+            return conn.pid
+    return None
+
+
+def _warm_up(url: str, requests: int = 5) -> None:
+    for _ in range(requests):
+        try:
+            resp = urllib.request.urlopen(f"{url}/")
+            resp.read()
+        except Exception:
+            pass
+
+
+@pytest.fixture
+def profiled_server(test_dir: Path, request) -> tuple[str, Path]:
+    PROFILES_DIR.mkdir(parents=True, exist_ok=True)
+    prof_path = str(PROFILES_DIR / f"{request.node.name}.prof")
+
+    proc, port = _start_server(test_dir, profile_path=prof_path)
+    url = f"http://localhost:{port}"
+
+    _warm_up(url)
+    yield url, PROFILES_DIR
+    _stop_server(proc)
+
+    if Path(prof_path).exists():
+        stats = pstats.Stats(prof_path)
+        print(f"\n  CPU profile saved: {prof_path}")
+        stats.print_stats(20)
+
+
+@pytest.fixture
+def memray_server(test_dir: Path, request) -> tuple[str, Path]:
+    PROFILES_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = PROFILES_DIR / f"{request.node.name}.bin"
+    out_path.unlink(missing_ok=True)
+
+    try:
+        import memray  # noqa: F401
+    except ImportError:
+        pytest.skip("memray not installed")
+        # Need a dummy yield for cleanup
+        proc, port = _start_server(test_dir)
+        yield f"http://localhost:{port}", PROFILES_DIR
+        _stop_server(proc)
+        return
+
+    # Start server under memray tracking
+    port = find_free_port()
+    venv_python = Path(__file__).resolve().parent.parent / ".venv" / "bin" / "python"
+    python = str(venv_python) if venv_python.exists() else sys.executable
+
+    args = [
+        python, "-m", "memray", "run", "-o", str(out_path),
+        "-m", "ssserve", str(test_dir), "-l", str(port),
+        "--no-port-switching", "-L"
+    ]
+    proc = subprocess.Popen(
+        args,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    _wait_for_server(port, proc)
+    url = f"http://localhost:{port}"
+
+    _warm_up(url)
+    yield url, PROFILES_DIR
+    _stop_server(proc)
+
+    if out_path.exists():
+        print(f"\n  Memory profile saved: {out_path}")
+
+
+@pytest.fixture
+def sampled_server(test_dir: Path, request) -> tuple[str, Path]:
+    proc, port = _start_server(test_dir)
+    url = f"http://localhost:{port}"
+
+    py_spy = shutil.which("py-spy")
+    if not py_spy:
+        venv_pyspy = Path(__file__).resolve().parent.parent / ".venv" / "bin" / "py-spy"
+        if venv_pyspy.exists():
+            py_spy = str(venv_pyspy)
+        else:
+            pytest.skip("py-spy not installed")
+            yield url, PROFILES_DIR
+            _stop_server(proc)
+            return
+
+    _warm_up(url)
+
+    PROFILES_DIR.mkdir(parents=True, exist_ok=True)
+    svg_path = PROFILES_DIR / f"{request.node.name}.svg"
+    pid = _find_server_pid(port)
+
+    duration = getattr(request, "param", {}).get("duration", 10)
+    rate = getattr(request, "param", {}).get("rate", 200)
+
+    if pid:
+        record_proc = subprocess.Popen(
+            [py_spy, "record", "-o", str(svg_path), "-p", str(pid),
+             "--duration", str(duration), "--rate", str(rate),
+             "--format", "speedscope"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    else:
+        record_proc = None
+
+    time.sleep(0.3)
+
+    yield url, PROFILES_DIR
+
+    if record_proc:
+        try:
+            record_proc.wait(timeout=duration + 15)
+        except subprocess.TimeoutExpired:
+            record_proc.terminate()
+            record_proc.wait(timeout=5)
+        if svg_path.exists():
+            print(f"\n  Sampling profile saved: {svg_path}")
+        else:
+            print(f"\n  Sampling profile: no stacks collected (process too short-lived)")
+    _stop_server(proc)

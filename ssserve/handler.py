@@ -18,13 +18,15 @@ from ssserve.config import Config
 from ssserve.fastops import etag as fast_etag
 from ssserve.fastops import fast_gzip
 from ssserve.fastops import guess_type as fast_guess_type
+from ssserve.fastops import sendfile as fast_sendfile
 from ssserve.listing import render_listing
 from ssserve.livereload import LiveReload
 
-_etag_cache: LockFreeCache = LockFreeCache(max_size=2048, ttl=300.0)
-_gzip_cache: LockFreeCache = LockFreeCache(max_size=1024, ttl=60.0)
-_file_cache: LockFreeCache = LockFreeCache(max_size=512, ttl=30.0)
-_error_cache: LockFreeCache = LockFreeCache(max_size=64, ttl=60.0)
+_etag_cache: LockFreeCache = LockFreeCache(max_size=2048, ttl=300.0)   # Keep - etags are small strings
+_gzip_cache: LockFreeCache = LockFreeCache(max_size=512, ttl=120.0)    # Reduced from 1024 - gzip is memory-heavy
+_file_cache: LockFreeCache = LockFreeCache(max_size=128, ttl=30.0)     # Reduced from 512 - avoid memory bloat
+_error_cache: LockFreeCache = LockFreeCache(max_size=64, ttl=60.0)     # Keep
+_listing_cache: LockFreeCache = LockFreeCache(max_size=256, ttl=10.0)
 
 
 def _apply_segments(template: str, groups: dict[str, str]) -> str:
@@ -96,6 +98,13 @@ def _get_gzip_data(data: bytes, cache_key: str) -> bytes | None:
 
 
 def _get_file_content(fs_path: str, mtime: float, size: int) -> bytes | None:
+    # Don't cache files larger than 256KB - they waste cache space and cause memory bloat
+    if size > 256 * 1024:
+        try:
+            with open(fs_path, "rb") as f:
+                return f.read()
+        except OSError:
+            return None
     cache_key = f"{fs_path}:{mtime}:{size}"
     cached = _file_cache.get(cache_key)
     if cached is not None:
@@ -205,11 +214,14 @@ class ServeHandler(BaseHTTPRequestHandler):
 
     def _resolve_path(self, url_path: str) -> str | None:
         normalized = self._normalize_path(url_path)
+        return self._resolve_path_fast(normalized)
+
+    def _resolve_path_fast(self, url_path: str) -> str | None:
         if self.config.public:
             base = os.path.join(self.root_dir, self.config.public)
         else:
             base = self.root_dir
-        fs_path = os.path.normpath(os.path.join(base, normalized.lstrip("/")))
+        fs_path = os.path.normpath(os.path.join(base, url_path.lstrip("/")))
 
         if not fs_path.startswith(os.path.normpath(base)):
             return None
@@ -244,10 +256,11 @@ class ServeHandler(BaseHTTPRequestHandler):
             return self._resolve_path(html_path)
         return None
 
-    def _check_trailing_slash(self, url_path: str) -> str | None:
+    def _check_trailing_slash(self, url_path: str, fs_path: str | None = None) -> str | None:
         if self.config.trailing_slash is None:
             return None
-        fs_path = self._resolve_path(url_path)
+        if fs_path is None:
+            fs_path = self._resolve_path_fast(url_path)
         if fs_path and os.path.isdir(fs_path):
             if not url_path.endswith("/") and self.config.trailing_slash:
                 return url_path + "/"
@@ -433,7 +446,25 @@ class ServeHandler(BaseHTTPRequestHandler):
                 self.wfile.write(_lr_html)
             else:
                 if raw_content is None:
-                    raw_content = _get_file_content(fs_path, mtime, file_size)
+                    # Try sendfile for files > 64KB (avoids copying through userspace)
+                    if file_size > 65536:
+                        try:
+                            with open(fs_path, "rb") as f:
+                                in_fd = f.fileno()
+                                out_fd = self.wfile.fileno()
+                                remaining = file_size
+                                while remaining > 0:
+                                    sent = fast_sendfile(out_fd, in_fd, remaining)
+                                    if sent is None or sent == 0:
+                                        break
+                                    remaining -= sent
+                            # sendfile succeeded, skip fallback
+                            self._log_request(status, file_size)
+                            return
+                        except (OSError, AttributeError, TypeError):
+                            pass
+                # Fallback: read into memory and write
+                raw_content = _get_file_content(fs_path, mtime, file_size)
                 if raw_content is not None:
                     self.wfile.write(raw_content)
                 else:
@@ -461,7 +492,9 @@ class ServeHandler(BaseHTTPRequestHandler):
                 self._send_redirect(cu_result, 301)
                 return
 
-        ts_result = self._check_trailing_slash(url_path)
+        fs_path = self._resolve_path_fast(url_path)
+
+        ts_result = self._check_trailing_slash(url_path, fs_path)
         if ts_result:
             self._send_redirect(ts_result, 301)
             return
@@ -475,8 +508,10 @@ class ServeHandler(BaseHTTPRequestHandler):
         rewritten = self._check_rewrites(url_path)
         if rewritten:
             url_path = rewritten
+            fs_path = self._resolve_path_fast(url_path)
 
-        fs_path = self._resolve_with_clean_urls(url_path)
+        if not fs_path:
+            fs_path = self._resolve_with_clean_urls(url_path)
 
         if fs_path and os.path.isdir(fs_path):
             for index in ("index.html", "index.htm"):
@@ -497,15 +532,24 @@ class ServeHandler(BaseHTTPRequestHandler):
 
             if self._is_listing_allowed(url_path):
                 try:
-                    entries = sorted(os.scandir(fs_path), key=lambda e: (not e.is_dir(), e.name.lower()))
-                    entries = [e for e in entries if not self._is_unlisted(e.name)]
-                    if not url_path.endswith("/"):
-                        self._send_redirect(url_path + "/", 301)
-                        return
-                    html = render_listing(url_path, fs_path, entries)
-                    if self.live_reload:
-                        html = self.live_reload.inject_script(html, self.live_reload.version)
-                    body = html.encode("utf-8")
+                    dir_stat = os.stat(fs_path)
+                    cache_key = f"{fs_path}:{dir_stat.st_mtime}:{dir_stat.st_size}"
+                    cached_body = _listing_cache.get(cache_key)
+
+                    if cached_body is not None:
+                        body = cached_body
+                    else:
+                        entries = sorted(os.scandir(fs_path), key=lambda e: (not e.is_dir(), e.name.lower()))
+                        entries = [e for e in entries if not self._is_unlisted(e.name)]
+                        if not url_path.endswith("/"):
+                            self._send_redirect(url_path + "/", 301)
+                            return
+                        html_content = render_listing(url_path, fs_path, entries)
+                        if self.live_reload:
+                            html_content = self.live_reload.inject_script(html_content, self.live_reload.version)
+                        body = html_content.encode("utf-8")
+                        _listing_cache.set(cache_key, body)
+
                     self.send_response(HTTPStatus.OK)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
                     self.send_header("Content-Length", str(len(body)))
