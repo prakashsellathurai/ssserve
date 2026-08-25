@@ -280,6 +280,73 @@ def test_c_server_directory_listing_sorted(c_server_no_index):
     assert '<tr' in html
 
 
+def test_c_server_custom_404_page(c_server: str):
+    """Custom 404.html is served for not found."""
+    status, headers, body = _get(f"{c_server}/nonexistent.txt")
+    assert status == 404
+    assert b"Custom 404" in body
+
+
+def test_c_server_error_page_content_type(c_server: str):
+    """Error pages have proper Content-Type with charset."""
+    status, headers, body = _get(f"{c_server}/nonexistent.txt")
+    assert status == 404
+    assert headers.get("Content-Type") == "text/html; charset=utf-8"
+
+
+def test_c_server_error_page_html_body(c_server_no_404: str):
+    """Built-in error page returns valid HTML."""
+    status, headers, body = _get(f"{c_server_no_404}/nonexistent.txt")
+    assert status == 404
+    html = body.decode()
+    assert "<!doctype html>" in html.lower()
+    assert "404" in html
+
+
+@pytest.fixture
+def c_server_no_404(tmp_path: Path) -> str:
+    """Server with no custom 404.html, to test built-in fallback."""
+    try:
+        from ssserve._server import serve
+    except ImportError:
+        pytest.skip("C server extension not built")
+
+    (tmp_path / "index.html").write_text("<h1>Home</h1>")
+
+    port = find_free_port()
+    server_thread = threading.Thread(
+        target=serve,
+        args=(port, str(tmp_path)),
+        kwargs={"cors": False, "caching": False, "etag": False},
+        daemon=True,
+    )
+    server_thread.start()
+
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        try:
+            with socket.create_connection(("localhost", port), timeout=0.5) as s:
+                s.sendall(b"GET / HTTP/1.0\r\n\r\n")
+                if b"HTTP/" in s.recv(128):
+                    break
+        except (ConnectionRefusedError, OSError, socket.timeout):
+            time.sleep(0.1)
+    else:
+        pytest.fail(f"C server (no-404) did not start on port {port} within 5s")
+
+    yield f"http://localhost:{port}"
+
+
+def test_c_server_builtin_404_page(c_server_no_404: str):
+    """Without custom 404.html, built-in error page is served."""
+    status, headers, body = _get(f"{c_server_no_404}/nonexistent.txt")
+    assert status == 404
+    assert headers.get("Content-Type") == "text/html; charset=utf-8"
+    html = body.decode()
+    assert "404" in html
+    assert "Not Found" in html
+
+
 def test_c_server_directory_trailing_slash_redirect(c_server_no_index):
     """Directory without trailing slash redirects."""
     url, test_dir = c_server_no_index

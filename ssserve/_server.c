@@ -301,11 +301,87 @@ static int cmp_dir_entry(const void *a, const void *b) {
     return strcasecmp(ea->name, eb->name);
 }
 
+static void send_error_page(int client_fd, int status, const char *root_dir) {
+    const char *title, *message;
+    switch (status) {
+        case 403: title = "403 Forbidden"; message = "You don't have permission to access this resource."; break;
+        case 404: title = "404 Not Found"; message = "The requested URL was not found on this server."; break;
+        case 500: title = "500 Internal Server Error"; message = "The server encountered an internal error."; break;
+        default: title = "Error"; message = "An error occurred.";
+    }
+
+    char body[1024];
+    int body_len = snprintf(body, sizeof(body),
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<title>%s</title>"
+        "<style>body{font-family:sans-serif;padding:40px;text-align:center}"
+        "h1{font-weight:400;color:#333}</style></head>"
+        "<body><h1>%d</h1><p>%s</p></body></html>",
+        title, status, message);
+
+    char header[512];
+    int header_len = snprintf(header, sizeof(header),
+        "HTTP/1.1 %d %s\r\n"
+        "Content-Type: text/html; charset=utf-8\r\n"
+        "Content-Length: %d\r\n"
+        "Server: ssserve\r\n"
+        "Connection: close\r\n"
+        "\r\n",
+        status, title, body_len);
+
+    write_all(client_fd, header, header_len);
+    write_all(client_fd, body, body_len);
+}
+
+static void send_error_page_for_file(int client_fd, int status, const char *root_dir) {
+    char error_path[PATH_MAX];
+    snprintf(error_path, sizeof(error_path), "%s/%d.html", root_dir, status);
+
+    struct stat st;
+    if (stat(error_path, &st) == 0) {
+        int file_fd = open(error_path, O_RDONLY);
+        if (file_fd >= 0) {
+            char header_buf[512];
+            int header_len = snprintf(header_buf, sizeof(header_buf),
+                "HTTP/1.1 %d\r\n"
+                "Content-Type: text/html; charset=utf-8\r\n"
+                "Content-Length: %ld\r\n"
+                "Server: ssserve\r\n"
+                "Connection: close\r\n"
+                "\r\n",
+                status, (long)st.st_size);
+            write_all(client_fd, header_buf, header_len);
+
+            if (st.st_size > SENDFILE_THRESHOLD) {
+                off_t offset = 0;
+                size_t remaining = st.st_size;
+                while (remaining > 0) {
+                    ssize_t sent = sendfile(client_fd, file_fd, &offset, remaining);
+                    if (sent < 0) {
+                        if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+                        break;
+                    }
+                    remaining -= sent;
+                }
+            } else {
+                char file_buf[BUFFER_SIZE];
+                ssize_t bytes_read;
+                while ((bytes_read = read(file_fd, file_buf, sizeof(file_buf))) > 0) {
+                    if (write_all(client_fd, file_buf, bytes_read) < 0) break;
+                }
+            }
+            close(file_fd);
+            return;
+        }
+    }
+
+    send_error_page(client_fd, status, root_dir);
+}
+
 static void render_listing(int client_fd, const char *fs_path, const char *url_path) {
     DIR *dir = opendir(fs_path);
     if (!dir) {
-        char response[] = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n";
-        write_all(client_fd, response, strlen(response));
+        send_error_page_for_file(client_fd, 403, server_config.root_dir);
         return;
     }
 
@@ -345,8 +421,7 @@ static void render_listing(int client_fd, const char *fs_path, const char *url_p
     size_t body_cap = 8192;
     body = (char *)malloc(body_cap);
     if (!body) {
-        char response[] = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n";
-        write_all(client_fd, response, strlen(response));
+        send_error_page_for_file(client_fd, 500, server_config.root_dir);
         return;
     }
 
@@ -355,7 +430,7 @@ static void render_listing(int client_fd, const char *fs_path, const char *url_p
         if (body_len + slen >= body_cap) { \
             body_cap = (body_cap + slen) * 2; \
             body = realloc(body, body_cap); \
-            if (!body) { char r[] = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n"; write_all(client_fd, r, strlen(r)); return; } \
+            if (!body) { send_error_page_for_file(client_fd, 500, server_config.root_dir); return; } \
         } \
         memcpy(body + body_len, s, slen); \
         body_len += slen; \
@@ -594,45 +669,7 @@ static void handle_request(ConnectionState *conn) {
 
     struct stat st;
     if (stat(full_path, &st) < 0) {
-        char not_found_path[PATH_MAX];
-        snprintf(not_found_path, sizeof(not_found_path), "%s/404.html", server_config.root_dir);
-        if (stat(not_found_path, &st) == 0) {
-            int file_fd = open(not_found_path, O_RDONLY);
-            if (file_fd >= 0) {
-                char header_buf[512];
-                int header_len = snprintf(header_buf, sizeof(header_buf),
-                    "HTTP/1.1 404 Not Found\r\n"
-                    "Content-Type: text/html\r\n"
-                    "Content-Length: %ld\r\n"
-                    "Server: ssserve\r\n"
-                    "\r\n",
-                    (long)st.st_size);
-                write_all(conn->fd, header_buf, header_len);
-
-                if (st.st_size > SENDFILE_THRESHOLD) {
-                    off_t offset = 0;
-                    size_t remaining = st.st_size;
-                    while (remaining > 0) {
-                        ssize_t sent = sendfile(conn->fd, file_fd, &offset, remaining);
-                        if (sent < 0) {
-                            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
-                            break;
-                        }
-                        remaining -= sent;
-                    }
-                } else {
-                    char file_buf[BUFFER_SIZE];
-                    ssize_t bytes_read;
-                    while ((bytes_read = read(file_fd, file_buf, sizeof(file_buf))) > 0) {
-                        if (write_all(conn->fd, file_buf, bytes_read) < 0) break;
-                    }
-                }
-                close(file_fd);
-                return;
-            }
-        }
-        char response[] = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
-        write_all(conn->fd, response, strlen(response));
+        send_error_page_for_file(conn->fd, 404, server_config.root_dir);
         return;
     }
 
@@ -758,8 +795,7 @@ serve_file:
 
     int file_fd = open(full_path, O_RDONLY);
     if (file_fd < 0) {
-        char response[] = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n";
-        write_all(conn->fd, response, strlen(response));
+        send_error_page_for_file(conn->fd, 500, server_config.root_dir);
         return;
     }
 
@@ -799,8 +835,7 @@ serve_file:
             /* gzip failed, fall through to normal send */
             file_fd = open(full_path, O_RDONLY);
             if (file_fd < 0) {
-                char response[] = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n";
-                write_all(conn->fd, response, strlen(response));
+                send_error_page_for_file(conn->fd, 500, server_config.root_dir);
                 return;
             }
         }
