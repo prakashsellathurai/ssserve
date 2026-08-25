@@ -103,6 +103,7 @@ static int url_decode(const char *src, char *dst, size_t dst_size) {
         }
     }
     dst[j] = '\0';
+    if (j < dst_size - 1 && strlen(dst) != j) return -1;
     return (j < dst_size - 1) ? 0 : -1;
 }
 
