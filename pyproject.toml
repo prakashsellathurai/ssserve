@@ -30,6 +30,7 @@ libraries = ["pthread", "z"]
 [tool.pytest.ini_options]
 markers = [
     "profile: profiling tests (CPU, memory, sampling)",
+    "c_server_config: C server config for redirects/rewrites",
 ]
 testpaths = ["tests"]
 addopts = ""

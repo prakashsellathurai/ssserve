@@ -4,6 +4,7 @@ import cProfile
 import atexit
 import os
 import pstats
+import re
 import signal
 import socket
 import ssl
@@ -23,6 +24,67 @@ from ssserve.config import load_config
 from ssserve.handler import ServeHandler
 from ssserve.livereload import LiveReload
 from ssserve.network import Address, find_free_port, get_lan_ip, parse_listen
+
+
+def _route_to_regex(pattern: str) -> re.Pattern:
+    parts = []
+    for segment in pattern.split("/"):
+        if segment.startswith(":"):
+            parts.append(f"(?P<{segment[1:]}>[^/]+)")
+        elif "*" in segment:
+            parts.append(re.escape(segment).replace(r"\*\*", ".*").replace(r"\*", "[^/]*"))
+        else:
+            parts.append(re.escape(segment))
+    return re.compile(f"^{'/'.join(parts)}$")
+
+
+def _apply_segments(template: str, groups: dict[str, str]) -> str:
+    result = template
+    for key, val in groups.items():
+        result = result.replace(f":{key}", val)
+    return result
+
+
+def _make_config_callback(cfg):
+    """Create a config callback for the C server from a Config object."""
+    redirects = []
+    for rule in cfg.redirects:
+        redirects.append({
+            "source": rule.source,
+            "destination": rule.destination,
+            "type": rule.type,
+            "compiled_regex": rule.compiled_regex,
+        })
+
+    rewrites = []
+    for rule in cfg.rewrites:
+        rewrites.append({
+            "source": rule.source,
+            "destination": rule.destination,
+            "compiled_regex": rule.compiled_regex,
+        })
+
+    def callback(path: str):
+        # Check redirects
+        for rule in redirects:
+            m = rule["compiled_regex"].match(path)
+            if m:
+                dest = _apply_segments(rule["destination"], m.groupdict())
+                return dest, rule["type"]
+
+        # Check rewrites
+        for rule in rewrites:
+            m = rule["compiled_regex"].match(path)
+            if m:
+                dest = _apply_segments(rule["destination"], m.groupdict())
+                return dest, 200
+
+        return None
+
+    # Only return callback if there are rules to check
+    if redirects or rewrites:
+        return callback
+    return None
 
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
@@ -222,6 +284,7 @@ def main(
             try:
                 from ssserve._server import serve
                 click.echo("  Using C server (epoll + thread pool)")
+                config_callback = _make_config_callback(cfg)
                 for addr, port_switched in listeners:
                     _print_startup(addr, cors, caching, ssl_active, no_port_switching, no_compression, port_switched)
                     serve(
@@ -232,6 +295,7 @@ def main(
                         etag=cfg.etag,
                         no_compression=no_compression,
                         symlinks=symlinks,
+                        config_callback=config_callback,
                     )
             except ImportError:
                 click.echo("  Warning: C server not available, using Python server", err=True)

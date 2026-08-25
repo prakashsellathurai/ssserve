@@ -469,6 +469,54 @@ static int parse_http_request(ConnectionState *conn) {
     return 0;
 }
 
+static void send_redirect(int client_fd, const char *location, int status) {
+    char header[1024];
+    int len = snprintf(header, sizeof(header),
+        "HTTP/1.1 %d Moved Permanently\r\n"
+        "Location: %s\r\n"
+        "Content-Length: 0\r\n"
+        "Server: ssserve\r\n"
+        "Connection: close\r\n"
+        "\r\n",
+        status, location);
+    write_all(client_fd, header, len);
+}
+
+static int check_callbacks(ConnectionState *conn, char *new_path, size_t new_path_size, int *status_code) {
+    if (!server_config.config_callback || server_config.config_callback == Py_None) return 0;
+
+    PyGILState_STATE gstate = PyGILState_Ensure();
+    PyObject *result = PyObject_CallFunction(server_config.config_callback, "s", conn->path);
+    if (result == NULL) {
+        PyErr_Print();
+        PyGILState_Release(gstate);
+        return 0;
+    }
+    if (result == Py_None) {
+        Py_DECREF(result);
+        PyGILState_Release(gstate);
+        return 0;
+    }
+
+    // Result is (new_path, status_code) tuple or None
+    if (PyTuple_Check(result) && PyTuple_Size(result) == 2) {
+        PyObject *path_obj = PyTuple_GetItem(result, 0);
+        PyObject *status_obj = PyTuple_GetItem(result, 1);
+        const char *path = PyUnicode_AsUTF8(path_obj);
+        int status = (int)PyLong_AsLong(status_obj);
+        if (path && status > 0) {
+            snprintf(new_path, new_path_size, "%s", path);
+            *status_code = status;
+            Py_DECREF(result);
+            PyGILState_Release(gstate);
+            return 1;
+        }
+    }
+    Py_DECREF(result);
+    PyGILState_Release(gstate);
+    return 0;
+}
+
 static void handle_request(ConnectionState *conn) {
     if (conn->method == HTTP_OPTIONS) {
         char response[] =
@@ -487,6 +535,26 @@ static void handle_request(ConnectionState *conn) {
         char response[] = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
         write_all(conn->fd, response, strlen(response));
         return;
+    }
+
+    /* Check Python callbacks for redirects/rewrites */
+    char callback_path[MAX_PATH];
+    int callback_status;
+    if (check_callbacks(conn, callback_path, sizeof(callback_path), &callback_status)) {
+        if (callback_status != 200) {
+            /* Redirect: send redirect response and return */
+            send_redirect(conn->fd, callback_path, callback_status);
+            return;
+        }
+        /* Rewrite: update path and continue processing */
+        strncpy(conn->path, callback_path, MAX_PATH - 1);
+        conn->path[MAX_PATH - 1] = '\0';
+        /* Re-normalize the rewritten path */
+        if (normalize_path(conn->path, normalized, sizeof(normalized)) < 0) {
+            char response[] = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
+            write_all(conn->fd, response, strlen(response));
+            return;
+        }
     }
 
     char full_path[PATH_MAX];

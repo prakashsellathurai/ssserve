@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 import urllib.request
 import urllib.error
@@ -292,3 +293,135 @@ def test_c_server_directory_trailing_slash_redirect(c_server_no_index):
     with pytest.raises(urllib.error.HTTPError) as exc_info:
         opener.open(f'{url}/subdir')
     assert exc_info.value.code == 301
+
+
+def _config_callback(path: str, *, redirects=None, rewrites=None):
+    """Check redirects/rewrites for C server. Returns (new_path, status) or None."""
+    import re as re_mod
+
+    if redirects is None:
+        redirects = []
+    if rewrites is None:
+        rewrites = []
+
+    # Check redirects
+    for rule in redirects:
+        m = rule["compiled_regex"].match(path)
+        if m:
+            dest = rule["destination"]
+            for key, val in m.groupdict().items():
+                dest = dest.replace(f":{key}", val)
+            return dest, rule["type"]
+
+    # Check rewrites
+    for rule in rewrites:
+        m = rule["compiled_regex"].match(path)
+        if m:
+            dest = rule["destination"]
+            for key, val in m.groupdict().items():
+                dest = dest.replace(f":{key}", val)
+            return dest, 200
+
+    return None
+
+
+@pytest.fixture
+def c_server_with_config(tmp_path: Path, request):
+    """C server fixture that starts with redirect/rewrite config."""
+    try:
+        from ssserve._server import serve
+    except ImportError:
+        pytest.skip("C server extension not built")
+
+    (tmp_path / "index.html").write_text("<h1>Home</h1>")
+    (tmp_path / "new.html").write_text("<h1>New Page</h1>")
+    (tmp_path / "app.html").write_text("<h1>App Page</h1>")
+
+    # Use parametrize marker to get config
+    marker = request.node.get_closest_marker("c_server_config")
+    config = marker.kwargs if marker else {}
+
+    redirects_raw = config.get("redirects", [])
+    rewrites_raw = config.get("rewrites", [])
+
+    import re as re_mod
+
+    def _route_to_regex(pattern):
+        parts = []
+        for segment in pattern.split("/"):
+            if segment.startswith(":"):
+                parts.append(f"(?P<{segment[1:]}>[^/]+)")
+            elif "*" in segment:
+                parts.append(re_mod.escape(segment).replace(r"\*\*", ".*").replace(r"\*", "[^/]*"))
+            else:
+                parts.append(re_mod.escape(segment))
+        return re_mod.compile(f"^{'/'.join(parts)}$")
+
+    redirects = []
+    for r in redirects_raw:
+        redirects.append({
+            "source": r["source"],
+            "destination": r["destination"],
+            "type": r.get("type", 301),
+            "compiled_regex": _route_to_regex(r["source"]),
+        })
+
+    rewrites = []
+    for r in rewrites_raw:
+        rewrites.append({
+            "source": r["source"],
+            "destination": r["destination"],
+            "compiled_regex": _route_to_regex(r["source"]),
+        })
+
+    def callback(path):
+        return _config_callback(path, redirects=redirects, rewrites=rewrites)
+
+    port = find_free_port()
+    server_thread = threading.Thread(
+        target=serve,
+        args=(port, str(tmp_path)),
+        kwargs={"cors": False, "caching": False, "etag": False, "config_callback": callback},
+        daemon=True,
+    )
+    server_thread.start()
+
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        try:
+            with socket.create_connection(("localhost", port), timeout=0.5) as s:
+                s.sendall(b"GET / HTTP/1.0\r\n\r\n")
+                if b"HTTP/" in s.recv(128):
+                    break
+        except (ConnectionRefusedError, OSError, socket.timeout):
+            time.sleep(0.1)
+    else:
+        pytest.fail(f"C server (config) did not start on port {port} within 5s")
+
+    yield f"http://localhost:{port}"
+
+
+@pytest.mark.c_server_config(
+    redirects=[{"source": "/old", "destination": "/new", "type": 301}]
+)
+def test_c_server_redirect(c_server_with_config):
+    """Redirect rule from serve.json is applied."""
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def http_error_301(self, req, fp, code, msg, headers):
+            raise urllib.error.HTTPError(req.full_url, code, msg, headers, fp)
+    opener = urllib.request.build_opener(NoRedirect)
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        opener.open(f'{c_server_with_config}/old')
+    assert exc_info.value.code == 301
+    assert exc_info.value.headers.get('Location') == '/new'
+
+
+@pytest.mark.c_server_config(
+    rewrites=[{"source": "/app", "destination": "/app.html"}]
+)
+def test_c_server_rewrite(c_server_with_config):
+    """Rewrite rule serves different content."""
+    resp = urllib.request.urlopen(f'{c_server_with_config}/app')
+    assert resp.status == 200
+    body = resp.read().decode()
+    assert "App Page" in body
