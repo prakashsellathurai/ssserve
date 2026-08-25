@@ -51,6 +51,7 @@ typedef struct {
     int symlinks;
     HeaderRule *header_rules;
     int num_header_rules;
+    PyObject *live_reload;  /* LiveReload object, or NULL */
 } ServerConfig;
 
 typedef struct {
@@ -321,6 +322,8 @@ static void write_extra_headers(int client_fd, const char *origin, const char *u
 static void apply_common_headers(int client_fd);
 static void apply_cors_headers(int client_fd, const char *origin);
 static void apply_custom_headers(int client_fd, const char *url_path);
+static int inject_live_reload_script(const char *content, size_t content_len,
+                                     char **out_content, size_t *out_len);
 
 static void send_error_page(int client_fd, int status, const char *root_dir) {
     const char *title, *message;
@@ -502,6 +505,17 @@ static void render_listing(int client_fd, const char *fs_path, const char *url_p
     APPEND("</table>\n</body>\n</html>\n");
     #undef APPEND
 
+    /* Inject live-reload script into directory listing */
+    if (server_config.live_reload) {
+        char *lr_content = NULL;
+        size_t lr_len = 0;
+        if (inject_live_reload_script(body, body_len, &lr_content, &lr_len)) {
+            free(body);
+            body = lr_content;
+            body_len = lr_len;
+        }
+    }
+
     char header_buf[512];
     int header_len = snprintf(header_buf, sizeof(header_buf),
         "HTTP/1.1 200 OK\r\n"
@@ -664,6 +678,103 @@ static int check_callbacks(ConnectionState *conn, char *new_path, size_t new_pat
     return 0;
 }
 
+static void handle_live_reload_check(ConnectionState *conn, const char *normalized_path) {
+    PyGILState_STATE gstate = PyGILState_Ensure();
+
+    /* Parse client version from query string ?v=N */
+    int client_version = 0;
+    const char *query = strchr(normalized_path, '?');
+    if (query) {
+        query++;
+        const char *v_param = strstr(query, "v=");
+        if (v_param) {
+            client_version = atoi(v_param + 2);
+        }
+    }
+
+    /* Get current version from LiveReload object */
+    PyObject *version_obj = PyObject_GetAttrString(server_config.live_reload, "version");
+    if (!version_obj) {
+        PyErr_Print();
+        PyGILState_Release(gstate);
+        char response[] = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nServer: ssserve\r\n";
+        write_all(conn->fd, response, strlen(response));
+        return;
+    }
+    int current_version = (int)PyLong_AsLong(version_obj);
+    Py_DECREF(version_obj);
+
+    int should_reload = current_version > client_version;
+
+    char body[128];
+    int body_len = snprintf(body, sizeof(body),
+        "{\"reload\":%s,\"version\":%d}",
+        should_reload ? "true" : "false",
+        current_version);
+
+    char header_buf[256];
+    int header_len = snprintf(header_buf, sizeof(header_buf),
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: %d\r\n"
+        "Cache-Control: no-store\r\n"
+        "Server: ssserve\r\n",
+        body_len);
+
+    write_all(conn->fd, header_buf, header_len);
+    write_extra_headers(conn->fd, conn->origin, conn->path);
+    write_all(conn->fd, "\r\n", 2);
+    write_all(conn->fd, body, body_len);
+
+    PyGILState_Release(gstate);
+}
+
+static int inject_live_reload_script(const char *content, size_t content_len,
+                                     char **out_content, size_t *out_len) {
+    PyGILState_STATE gstate = PyGILState_Ensure();
+
+    PyObject *py_content = PyUnicode_FromStringAndSize(content, content_len);
+    if (!py_content) {
+        PyErr_Print();
+        PyGILState_Release(gstate);
+        return 0;
+    }
+
+    PyObject *version_obj = PyObject_GetAttrString(server_config.live_reload, "version");
+    if (!version_obj) {
+        PyErr_Print();
+        Py_DECREF(py_content);
+        PyGILState_Release(gstate);
+        return 0;
+    }
+    int version = (int)PyLong_AsLong(version_obj);
+    Py_DECREF(version_obj);
+
+    PyObject *result = PyObject_CallMethod(server_config.live_reload, "inject_script", "Oi",
+                                           py_content, version);
+    Py_DECREF(py_content);
+
+    if (!result) {
+        PyErr_Print();
+        PyGILState_Release(gstate);
+        return 0;
+    }
+
+    const char *result_str = PyUnicode_AsUTF8AndSize(result, (Py_ssize_t *)out_len);
+    if (!result_str) {
+        PyErr_Print();
+        Py_DECREF(result);
+        PyGILState_Release(gstate);
+        return 0;
+    }
+
+    *out_content = strdup(result_str);
+    *out_len = strlen(*out_content);
+    Py_DECREF(result);
+    PyGILState_Release(gstate);
+    return 1;
+}
+
 static int parse_range(const char *range_header, int file_size, int *start, int *end) {
     if (!range_header || strncmp(range_header, "bytes=", 6) != 0) return -1;
     const char *p = range_header + 6;
@@ -706,6 +817,12 @@ static void handle_request(ConnectionState *conn) {
         write_all(conn->fd, response, strlen(response));
         write_extra_headers(conn->fd, conn->origin, NULL);
         write_all(conn->fd, "\r\n", 2);
+        return;
+    }
+
+    /* Handle live-reload check endpoint */
+    if (server_config.live_reload && strncmp(normalized, "/__ssserve/", 11) == 0) {
+        handle_live_reload_check(conn, normalized);
         return;
     }
 
@@ -995,14 +1112,24 @@ serve_file:
         use_gzip = 1;
     }
 
+    /* Check if live-reload script injection is needed */
+    int use_inject = 0;
+    if (server_config.live_reload && !range_valid && conn->method != HTTP_HEAD && strstr(mime_type, "text/html")) {
+        use_inject = 1;
+    }
+
+    char *injected_data = NULL;
+    size_t injected_len = 0;
+    int injected = 0;
+
     int file_fd = open(full_path, O_RDONLY);
     if (file_fd < 0) {
         send_error_page_for_file(conn->fd, 500, server_config.root_dir);
         return;
     }
 
-    /* For gzip: read file into memory, compress, and send */
-    if (use_gzip && st.st_size < 256 * 1024 && st.st_size > 0) {
+    /* For live-reload injection: read file, inject script */
+    if (use_inject) {
         char *file_data = (char *)malloc(st.st_size);
         if (file_data) {
             ssize_t total_read = 0;
@@ -1013,9 +1140,51 @@ serve_file:
             }
             close(file_fd);
 
+            if (inject_live_reload_script(file_data, total_read, &injected_data, &injected_len)) {
+                injected = 1;
+                free(file_data);
+            } else {
+                /* Injection failed, serve original file */
+                free(file_data);
+                file_fd = open(full_path, O_RDONLY);
+                if (file_fd < 0) {
+                    send_error_page_for_file(conn->fd, 500, server_config.root_dir);
+                    return;
+                }
+            }
+        }
+    }
+
+    /* For gzip: read file into memory, compress, and send */
+    if (use_gzip && st.st_size < 256 * 1024 && st.st_size > 0) {
+        char *file_data = NULL;
+        size_t file_data_len = 0;
+        int file_data_from_inject = 0;
+
+        if (injected) {
+            /* Use already-injected content */
+            file_data = injected_data;
+            file_data_len = injected_len;
+            file_data_from_inject = 1;
+        } else {
+            file_data = (char *)malloc(st.st_size);
+            if (file_data) {
+                ssize_t total_read = 0;
+                while (total_read < st.st_size) {
+                    ssize_t n = read(file_fd, file_data + total_read, st.st_size - total_read);
+                    if (n <= 0) break;
+                    total_read += n;
+                }
+                file_data_len = total_read;
+            }
+        }
+
+        if (file_data) {
+            close(file_fd);
+
             size_t compressed_len = 0;
-            char *compressed = gzip_compress(file_data, total_read, &compressed_len, 6);
-            free(file_data);
+            char *compressed = gzip_compress(file_data, file_data_len, &compressed_len, 6);
+            if (!file_data_from_inject) free(file_data);
 
             if (compressed) {
                 header_len = snprintf(header_buf, sizeof(header_buf),
@@ -1033,14 +1202,17 @@ serve_file:
                 write_all(conn->fd, "\r\n", 2);
                 write_all(conn->fd, compressed, compressed_len);
                 free(compressed);
+                if (injected) free(injected_data);
                 return;
             }
             /* gzip failed, fall through to normal send */
             file_fd = open(full_path, O_RDONLY);
             if (file_fd < 0) {
+                if (injected) free(injected_data);
                 send_error_page_for_file(conn->fd, 500, server_config.root_dir);
                 return;
             }
+            if (injected) { free(injected_data); injected = 0; }
         }
     }
 
@@ -1083,37 +1255,56 @@ serve_file:
             }
         }
     } else {
-        header_len = snprintf(header_buf, sizeof(header_buf),
-            "HTTP/1.1 200 OK\r\n"
-            "Content-Type: %s\r\n"
-            "Content-Length: %ld\r\n"
-            "Server: ssserve\r\n"
-            "%s%s\r\n"
-            "%s",
-            mime_type, (long)st.st_size,
-            etag_enabled ? "ETag: " : "Last-Modified: ",
-            etag_enabled ? etag_buf : date_buf,
-            etag_enabled ? "" : "Accept-Ranges: bytes\r\n");
-        write_all(conn->fd, header_buf, header_len);
-        write_extra_headers(conn->fd, conn->origin, conn->path);
-        write_all(conn->fd, "\r\n", 2);
-
-        if (st.st_size > SENDFILE_THRESHOLD) {
-            off_t offset = 0;
-            size_t remaining = st.st_size;
-            while (remaining > 0) {
-                ssize_t sent = sendfile(conn->fd, file_fd, &offset, remaining);
-                if (sent < 0) {
-                    if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
-                    break;
-                }
-                remaining -= sent;
-            }
+        if (injected) {
+            header_len = snprintf(header_buf, sizeof(header_buf),
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: %s\r\n"
+                "Content-Length: %zu\r\n"
+                "Server: ssserve\r\n"
+                "%s%s\r\n"
+                "%s",
+                mime_type, injected_len,
+                etag_enabled ? "ETag: " : "Last-Modified: ",
+                etag_enabled ? etag_buf : date_buf,
+                etag_enabled ? "" : "Accept-Ranges: bytes\r\n");
+            write_all(conn->fd, header_buf, header_len);
+            write_extra_headers(conn->fd, conn->origin, conn->path);
+            write_all(conn->fd, "\r\n", 2);
+            write_all(conn->fd, injected_data, injected_len);
+            free(injected_data);
         } else {
-            char file_buf[BUFFER_SIZE];
-            ssize_t bytes_read;
-            while ((bytes_read = read(file_fd, file_buf, sizeof(file_buf))) > 0) {
-                if (write_all(conn->fd, file_buf, bytes_read) < 0) break;
+            header_len = snprintf(header_buf, sizeof(header_buf),
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: %s\r\n"
+                "Content-Length: %ld\r\n"
+                "Server: ssserve\r\n"
+                "%s%s\r\n"
+                "%s",
+                mime_type, (long)st.st_size,
+                etag_enabled ? "ETag: " : "Last-Modified: ",
+                etag_enabled ? etag_buf : date_buf,
+                etag_enabled ? "" : "Accept-Ranges: bytes\r\n");
+            write_all(conn->fd, header_buf, header_len);
+            write_extra_headers(conn->fd, conn->origin, conn->path);
+            write_all(conn->fd, "\r\n", 2);
+
+            if (st.st_size > SENDFILE_THRESHOLD) {
+                off_t offset = 0;
+                size_t remaining = st.st_size;
+                while (remaining > 0) {
+                    ssize_t sent = sendfile(conn->fd, file_fd, &offset, remaining);
+                    if (sent < 0) {
+                        if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+                        break;
+                    }
+                    remaining -= sent;
+                }
+            } else {
+                char file_buf[BUFFER_SIZE];
+                ssize_t bytes_read;
+                while ((bytes_read = read(file_fd, file_buf, sizeof(file_buf))) > 0) {
+                    if (write_all(conn->fd, file_buf, bytes_read) < 0) break;
+                }
             }
         }
     }
@@ -1205,15 +1396,18 @@ static PyObject *py_serve(PyObject *self, PyObject *args, PyObject *kw) {
     int single = 0;
     PyObject *config_callback = NULL;
     PyObject *custom_headers = NULL;
+    PyObject *live_reload = NULL;
 
     static char *kwlist[] = {"port", "root_dir", "num_workers", "cors", "caching",
                             "etag", "no_compression", "symlinks", "config_callback",
-                            "custom_headers", "clean_urls", "trailing_slash", "single", NULL};
+                            "custom_headers", "clean_urls", "trailing_slash", "single",
+                            "live_reload", NULL};
 
-    if (!PyArg_ParseTupleAndKeywords(args, kw, "is|iiiiiiOOiii", kwlist,
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "is|iiiiiiOOiiiO", kwlist,
                                      &port, &root_dir, &num_workers, &cors, &caching,
                                      &etag, &no_compression, &symlinks, &config_callback,
-                                     &custom_headers, &clean_urls, &trailing_slash, &single))
+                                     &custom_headers, &clean_urls, &trailing_slash, &single,
+                                     &live_reload))
         return NULL;
 
     server_config.epoll_fd = epoll_create1(0);
@@ -1278,6 +1472,7 @@ static PyObject *py_serve(PyObject *self, PyObject *args, PyObject *kw) {
     server_config.trailing_slash = trailing_slash;
     server_config.single = single;
     server_config.symlinks = symlinks;
+    server_config.live_reload = live_reload;
 
     /* Parse custom headers: list of tuples (pattern, key, value) */
     server_config.header_rules = NULL;

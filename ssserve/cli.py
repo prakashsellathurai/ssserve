@@ -284,6 +284,8 @@ def main(
             try:
                 from ssserve._server import serve
                 click.echo("  Using C server (epoll + thread pool)")
+                if lr:
+                    click.echo("  ➜ Live reload enabled")
                 config_callback = _make_config_callback(cfg)
                 custom_headers_list = []
                 for rule in cfg.headers:
@@ -304,6 +306,7 @@ def main(
                         clean_urls=1 if cfg.clean_urls else 0,
                         trailing_slash=-1 if cfg.trailing_slash is None else (1 if cfg.trailing_slash else 0),
                         single=1 if single else 0,
+                        live_reload=lr,
                     )
             except ImportError:
                 click.echo("  Warning: C server not available, using Python server", err=True)
