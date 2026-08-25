@@ -17,6 +17,8 @@
 #include <limits.h>
 #include <time.h>
 #include <zlib.h>
+#include <dirent.h>
+#include <fnmatch.h>
 
 #define MAX_EVENTS 64
 #define MAX_CONNECTIONS 1024
@@ -267,6 +269,153 @@ static int resolve_path(const char *normalized, const char *root_dir, char *fs_p
     return 0;
 }
 
+static void format_size(long size, char *buf, size_t buf_size) {
+    if (size < 1024) {
+        snprintf(buf, buf_size, "%ld B", size);
+    } else if (size < 1024 * 1024) {
+        snprintf(buf, buf_size, "%.0f KB", size / 1024.0);
+    } else if (size < 1024L * 1024 * 1024) {
+        snprintf(buf, buf_size, "%.1f MB", size / (1024.0 * 1024.0));
+    } else {
+        snprintf(buf, buf_size, "%.1f GB", size / (1024.0 * 1024.0 * 1024.0));
+    }
+}
+
+static void format_date(time_t timestamp, char *buf, size_t buf_size) {
+    struct tm *tm_info = localtime(&timestamp);
+    strftime(buf, buf_size, "%Y-%m-%d %H:%M", tm_info);
+}
+
+typedef struct {
+    char name[256];
+    int is_dir;
+    time_t mtime;
+    off_t size;
+} DirEntry;
+
+static int cmp_dir_entry(const void *a, const void *b) {
+    const DirEntry *ea = (const DirEntry *)a;
+    const DirEntry *eb = (const DirEntry *)b;
+    if (ea->is_dir != eb->is_dir) return eb->is_dir - ea->is_dir;
+    return strcasecmp(ea->name, eb->name);
+}
+
+static void render_listing(int client_fd, const char *fs_path, const char *url_path) {
+    DIR *dir = opendir(fs_path);
+    if (!dir) {
+        char response[] = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n";
+        write_all(client_fd, response, strlen(response));
+        return;
+    }
+
+    DirEntry entries[4096];
+    int count = 0;
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != NULL && count < 4096) {
+        if (ent->d_name[0] == '.') {
+            if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+            if (strcmp(ent->d_name, ".DS_Store") == 0) continue;
+            if (strcmp(ent->d_name, ".git") == 0) continue;
+        }
+        strncpy(entries[count].name, ent->d_name, sizeof(entries[count].name) - 1);
+        entries[count].name[sizeof(entries[count].name) - 1] = '\0';
+
+        char entry_path[PATH_MAX];
+        snprintf(entry_path, sizeof(entry_path), "%s/%s", fs_path, ent->d_name);
+        struct stat st;
+        if (stat(entry_path, &st) == 0) {
+            entries[count].is_dir = S_ISDIR(st.st_mode);
+            entries[count].mtime = st.st_mtime;
+            entries[count].size = st.st_size;
+        } else {
+            entries[count].is_dir = 0;
+            entries[count].mtime = 0;
+            entries[count].size = 0;
+        }
+        count++;
+    }
+    closedir(dir);
+
+    qsort(entries, count, sizeof(DirEntry), cmp_dir_entry);
+
+    /* Build HTML */
+    char *body = NULL;
+    size_t body_len = 0;
+    size_t body_cap = 8192;
+    body = (char *)malloc(body_cap);
+    if (!body) {
+        char response[] = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n";
+        write_all(client_fd, response, strlen(response));
+        return;
+    }
+
+    #define APPEND(s) do { \
+        size_t slen = strlen(s); \
+        if (body_len + slen >= body_cap) { \
+            body_cap = (body_cap + slen) * 2; \
+            body = realloc(body, body_cap); \
+            if (!body) { char r[] = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n"; write_all(client_fd, r, strlen(r)); return; } \
+        } \
+        memcpy(body + body_len, s, slen); \
+        body_len += slen; \
+        body[body_len] = '\0'; \
+    } while(0)
+
+    char tmp[1024];
+    snprintf(tmp, sizeof(tmp),
+        "<!DOCTYPE html>\n<html>\n<head>\n"
+        "<meta charset=\"UTF-8\">\n"
+        "<title>Index of %s</title>\n"
+        "<style>\n"
+        "body { font-family: sans-serif; margin: 2em; }\n"
+        "table { border-collapse: collapse; width: 100%; }\n"
+        "th, td { text-align: left; padding: 0.5em 1em; }\n"
+        "th { border-bottom: 2px solid #333; }\n"
+        "tr:hover { background: #f5f5f5; }\n"
+        "a { text-decoration: none; color: #0366d6; }\n"
+        "a:hover { text-decoration: underline; }\n"
+        ".icon { width: 2em; display: inline-block; text-align: center; }\n"
+        "</style>\n"
+        "</head>\n<body>\n"
+        "<h1>Index of %s</h1>\n"
+        "<table>\n"
+        "<tr><th>Name</th><th>Size</th><th>Last Modified</th></tr>\n",
+        url_path, url_path);
+    APPEND(tmp);
+
+    for (int i = 0; i < count; i++) {
+        char size_str[32], date_str[32];
+        if (entries[i].is_dir) {
+            format_date(entries[i].mtime, date_str, sizeof(date_str));
+            snprintf(tmp, sizeof(tmp),
+                "<tr><td><a href=\"%s/\">%s/</a></td><td>-</td><td>%s</td></tr>\n",
+                entries[i].name, entries[i].name, date_str);
+        } else {
+            format_size(entries[i].size, size_str, sizeof(size_str));
+            format_date(entries[i].mtime, date_str, sizeof(date_str));
+            snprintf(tmp, sizeof(tmp),
+                "<tr><td><a href=\"%s\">%s</a></td><td>%s</td><td>%s</td></tr>\n",
+                entries[i].name, entries[i].name, size_str, date_str);
+        }
+        APPEND(tmp);
+    }
+
+    APPEND("</table>\n</body>\n</html>\n");
+    #undef APPEND
+
+    char header_buf[512];
+    int header_len = snprintf(header_buf, sizeof(header_buf),
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/html; charset=utf-8\r\n"
+        "Content-Length: %zu\r\n"
+        "Server: ssserve\r\n"
+        "\r\n",
+        body_len);
+    write_all(client_fd, header_buf, header_len);
+    write_all(client_fd, body, body_len);
+    free(body);
+}
+
 static int parse_http_request(ConnectionState *conn) {
     char *method_end = strchr(conn->buffer, ' ');
     if (!method_end) return -1;
@@ -392,15 +541,44 @@ static void handle_request(ConnectionState *conn) {
     }
 
     if (S_ISDIR(st.st_mode)) {
-        char index_path[PATH_MAX];
-        snprintf(index_path, sizeof(index_path), "%s/index.html", full_path);
-        if (stat(index_path, &st) < 0) {
-            char response[] = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
-            write_all(conn->fd, response, strlen(response));
+        /* If URL doesn't end with /, redirect */
+        size_t path_len = strlen(normalized);
+        if (path_len > 0 && normalized[path_len - 1] != '/') {
+            char redirect_url[MAX_PATH + 32];
+            snprintf(redirect_url, sizeof(redirect_url), "%s/", normalized);
+            char response[MAX_PATH + 128];
+            int resp_len = snprintf(response, sizeof(response),
+                "HTTP/1.1 301 Moved Permanently\r\n"
+                "Location: %s\r\n"
+                "Content-Length: 0\r\n"
+                "Server: ssserve\r\n"
+                "\r\n",
+                redirect_url);
+            write_all(conn->fd, response, resp_len);
             return;
         }
-        snprintf(full_path, sizeof(full_path), "%s", index_path);
+
+        /* Check for index.html */
+        char index_path[PATH_MAX];
+        snprintf(index_path, sizeof(index_path), "%s/index.html", full_path);
+        if (stat(index_path, &st) == 0) {
+            snprintf(full_path, sizeof(full_path), "%s", index_path);
+            goto serve_file;
+        }
+
+        /* Check for index.htm */
+        snprintf(index_path, sizeof(index_path), "%s/index.htm", full_path);
+        if (stat(index_path, &st) == 0) {
+            snprintf(full_path, sizeof(full_path), "%s", index_path);
+            goto serve_file;
+        }
+
+        /* Directory listing */
+        render_listing(conn->fd, full_path, normalized);
+        return;
     }
+
+serve_file:
 
     const char *mime_type = get_mime_type(full_path);
     char header_buf[512];

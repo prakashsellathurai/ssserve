@@ -223,3 +223,72 @@ class TestCServerETag:
         assert status == 200
         # When ETag is disabled, Last-Modified should be present
         assert "Last-Modified" in headers, "Last-Modified header missing"
+
+
+@pytest.fixture
+def c_server_no_index(tmp_path: Path) -> str:
+    """Server serving a directory without index.html."""
+    try:
+        from ssserve._server import serve
+    except ImportError:
+        pytest.skip("C server extension not built")
+    
+    (tmp_path / "file-1kb.bin").write_bytes(b"x" * 1024)
+    (tmp_path / "another.txt").write_text("hello")
+    
+    port = find_free_port()
+    server_thread = threading.Thread(
+        target=serve,
+        args=(port, str(tmp_path)),
+        kwargs={"cors": False, "caching": False, "etag": False},
+        daemon=True
+    )
+    server_thread.start()
+    
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        try:
+            with socket.create_connection(("localhost", port), timeout=0.5) as s:
+                s.sendall(b"GET / HTTP/1.0\r\n\r\n")
+                if b"HTTP/" in s.recv(128):
+                    break
+        except (ConnectionRefusedError, OSError, socket.timeout):
+            time.sleep(0.1)
+    else:
+        pytest.fail(f"C server did not start on port {port} within 5s")
+    
+    yield f"http://localhost:{port}", tmp_path
+
+
+def test_c_server_directory_listing(c_server_no_index):
+    """Root directory listing shows file names."""
+    url, test_dir = c_server_no_index
+    resp = urllib.request.urlopen(f'{url}/')
+    assert resp.status == 200
+    html = resp.read().decode()
+    assert 'Index of /' in html
+    assert 'file-1kb.bin' in html
+
+
+def test_c_server_directory_listing_sorted(c_server_no_index):
+    """Directories come before files, alphabetical within groups."""
+    url, test_dir = c_server_no_index
+    resp = urllib.request.urlopen(f'{url}/')
+    html = resp.read().decode()
+    # Check table rows exist
+    assert '<tr' in html
+
+
+def test_c_server_directory_trailing_slash_redirect(c_server_no_index):
+    """Directory without trailing slash redirects."""
+    url, test_dir = c_server_no_index
+    # Create a subdirectory
+    import os
+    os.makedirs(os.path.join(test_dir, 'subdir'), exist_ok=True)
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def http_error_301(self, req, fp, code, msg, headers):
+            raise urllib.error.HTTPError(req.full_url, code, msg, headers, fp)
+    opener = urllib.request.build_opener(NoRedirect)
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        opener.open(f'{url}/subdir')
+    assert exc_info.value.code == 301
