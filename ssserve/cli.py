@@ -285,6 +285,10 @@ def main(
                 from ssserve._server import serve
                 click.echo("  Using C server (epoll + thread pool)")
                 config_callback = _make_config_callback(cfg)
+                custom_headers_list = []
+                for rule in cfg.headers:
+                    for h in rule.headers:
+                        custom_headers_list.append((rule.source, h["key"], h.get("value", "")))
                 for addr, port_switched in listeners:
                     _print_startup(addr, cors, caching, ssl_active, no_port_switching, no_compression, port_switched)
                     serve(
@@ -296,6 +300,8 @@ def main(
                         no_compression=no_compression,
                         symlinks=symlinks,
                         config_callback=config_callback,
+                        custom_headers=custom_headers_list if custom_headers_list else None,
+                        clean_urls=1 if cfg.clean_urls else 0,
                     )
             except ImportError:
                 click.echo("  Warning: C server not available, using Python server", err=True)

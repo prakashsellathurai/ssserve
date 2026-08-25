@@ -47,6 +47,7 @@ def test_dir(tmp_path: Path) -> Path:
     (tmp_path / "index.html").write_text("<h1>Home</h1>")
     (tmp_path / "file-1kb.bin").write_bytes(b"x" * 1024)
     (tmp_path / "404.html").write_text("<h1>Custom 404</h1>")
+    (tmp_path / "clean.html").write_text("<h1>Clean Page</h1>")
     # Create a file that could be accessed via traversal if not blocked
     parent = tmp_path.parent / "escape_test.txt"
     parent.write_text("escaped")
@@ -554,3 +555,168 @@ def test_c_server_range_invalid(c_server_range):
                                 headers={'Range': 'bytes=999999-999999'})
     resp = urllib.request.urlopen(req)
     assert resp.status == 200
+
+
+@pytest.fixture
+def c_server_cors(test_dir: Path) -> str:
+    try:
+        from ssserve._server import serve
+    except ImportError:
+        pytest.skip("C server extension not built")
+
+    port = find_free_port()
+    server_thread = threading.Thread(
+        target=serve,
+        args=(port, str(test_dir)),
+        kwargs={"cors": True, "caching": False, "etag": False},
+        daemon=True,
+    )
+    server_thread.start()
+
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        try:
+            with socket.create_connection(("localhost", port), timeout=0.5) as s:
+                s.sendall(b"GET / HTTP/1.0\r\n\r\n")
+                if b"HTTP/" in s.recv(128):
+                    break
+        except (ConnectionRefusedError, OSError, socket.timeout):
+            time.sleep(0.1)
+    else:
+        pytest.fail(f"C server (cors) did not start on port {port} within 5s")
+
+    yield f"http://localhost:{port}"
+
+
+@pytest.fixture
+def c_server_no_cache(test_dir: Path) -> str:
+    try:
+        from ssserve._server import serve
+    except ImportError:
+        pytest.skip("C server extension not built")
+
+    port = find_free_port()
+    server_thread = threading.Thread(
+        target=serve,
+        args=(port, str(test_dir)),
+        kwargs={"cors": False, "caching": False, "etag": False},
+        daemon=True,
+    )
+    server_thread.start()
+
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        try:
+            with socket.create_connection(("localhost", port), timeout=0.5) as s:
+                s.sendall(b"GET / HTTP/1.0\r\n\r\n")
+                if b"HTTP/" in s.recv(128):
+                    break
+        except (ConnectionRefusedError, OSError, socket.timeout):
+            time.sleep(0.1)
+    else:
+        pytest.fail(f"C server (no-cache) did not start on port {port} within 5s")
+
+    yield f"http://localhost:{port}"
+
+
+def test_c_server_cors_headers(c_server_cors):
+    """CORS headers present when Origin header sent."""
+    req = urllib.request.Request(f'{c_server_cors}/file-1kb.bin',
+                                headers={'Origin': 'http://example.com'})
+    resp = urllib.request.urlopen(req)
+    assert resp.headers.get('Access-Control-Allow-Origin') == '*'
+
+
+def test_c_server_no_cache_header(c_server_no_cache):
+    """Cache-Control: no-store when caching disabled."""
+    resp = urllib.request.urlopen(f'{c_server_no_cache}/file-1kb.bin')
+    assert resp.headers.get('Cache-Control') == 'no-store'
+
+
+def test_c_server_clean_url_redirect(c_server):
+    """Request for /file.html redirects to /file."""
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def http_error_301(self, req, fp, code, msg, headers):
+            raise urllib.error.HTTPError(req.full_url, code, msg, headers, fp)
+    opener = urllib.request.build_opener(NoRedirect)
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        opener.open(f'{c_server}/clean.html')
+    assert exc_info.value.code == 301
+
+
+def test_c_server_no_compression():
+    """When no_compression is set, gzip is not used."""
+    try:
+        from ssserve._server import serve
+    except ImportError:
+        pytest.skip("C server extension not built")
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmpdir:
+        Path(tmpdir, "index.html").write_text("<h1>Home</h1>" * 100)
+
+        port = find_free_port()
+        server_thread = threading.Thread(
+            target=serve,
+            args=(port, tmpdir),
+            kwargs={"cors": False, "caching": False, "etag": False, "no_compression": True},
+            daemon=True,
+        )
+        server_thread.start()
+
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            try:
+                with socket.create_connection(("localhost", port), timeout=0.5) as s:
+                    s.sendall(b"GET / HTTP/1.0\r\n\r\n")
+                    if b"HTTP/" in s.recv(128):
+                        break
+            except (ConnectionRefusedError, OSError, socket.timeout):
+                time.sleep(0.1)
+        else:
+            pytest.fail(f"C server (no-compression) did not start on port {port} within 5s")
+
+        req = urllib.request.Request(
+            f'http://localhost:{port}/index.html',
+            headers={"Accept-Encoding": "gzip"},
+        )
+        resp = urllib.request.urlopen(req)
+        body = resp.read()
+        ce = resp.headers.get("Content-Encoding", "")
+        assert ce != "gzip", f"Expected no gzip, got Content-Encoding: '{ce}'"
+
+
+def test_c_server_caching_enabled():
+    """When caching is set, no Cache-Control: no-store header."""
+    try:
+        from ssserve._server import serve
+    except ImportError:
+        pytest.skip("C server extension not built")
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmpdir:
+        Path(tmpdir, "index.html").write_text("<h1>Home</h1>")
+
+        port = find_free_port()
+        server_thread = threading.Thread(
+            target=serve,
+            args=(port, tmpdir),
+            kwargs={"cors": False, "caching": True, "etag": False},
+            daemon=True,
+        )
+        server_thread.start()
+
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            try:
+                with socket.create_connection(("localhost", port), timeout=0.5) as s:
+                    s.sendall(b"GET / HTTP/1.0\r\n\r\n")
+                    if b"HTTP/" in s.recv(128):
+                        break
+            except (ConnectionRefusedError, OSError, socket.timeout):
+                time.sleep(0.1)
+        else:
+            pytest.fail(f"C server (caching) did not start on port {port} within 5s")
+
+        resp = urllib.request.urlopen(f'http://localhost:{port}/index.html')
+        assert resp.headers.get('Cache-Control') != 'no-store'

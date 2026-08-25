@@ -28,6 +28,12 @@
 #define DEFAULT_NUM_WORKERS 4
 
 typedef struct {
+    char *pattern;
+    char **lines;
+    int count;
+} HeaderRule;
+
+typedef struct {
     int epoll_fd;
     int listen_fd;
     char root_dir[PATH_MAX];
@@ -36,6 +42,12 @@ typedef struct {
     volatile int running;
     PyObject *config_callback;
     int etag;
+    int cors;
+    int caching;
+    int no_compression;
+    int clean_urls;
+    HeaderRule *header_rules;
+    int num_header_rules;
 } ServerConfig;
 
 typedef struct {
@@ -49,6 +61,7 @@ typedef struct {
     char *if_none_match;
     char *if_modified_since;
     char *range_header;
+    char *origin;
 } ConnectionState;
 
 static ServerConfig server_config;
@@ -301,6 +314,11 @@ static int cmp_dir_entry(const void *a, const void *b) {
     return strcasecmp(ea->name, eb->name);
 }
 
+static void write_extra_headers(int client_fd, const char *origin, const char *url_path);
+static void apply_common_headers(int client_fd);
+static void apply_cors_headers(int client_fd, const char *origin);
+static void apply_custom_headers(int client_fd, const char *url_path);
+
 static void send_error_page(int client_fd, int status, const char *root_dir) {
     const char *title, *message;
     switch (status) {
@@ -325,11 +343,12 @@ static void send_error_page(int client_fd, int status, const char *root_dir) {
         "Content-Type: text/html; charset=utf-8\r\n"
         "Content-Length: %d\r\n"
         "Server: ssserve\r\n"
-        "Connection: close\r\n"
-        "\r\n",
+        "Connection: close\r\n",
         status, title, body_len);
 
     write_all(client_fd, header, header_len);
+    apply_common_headers(client_fd);
+    write_all(client_fd, "\r\n", 2);
     write_all(client_fd, body, body_len);
 }
 
@@ -347,10 +366,11 @@ static void send_error_page_for_file(int client_fd, int status, const char *root
                 "Content-Type: text/html; charset=utf-8\r\n"
                 "Content-Length: %ld\r\n"
                 "Server: ssserve\r\n"
-                "Connection: close\r\n"
-                "\r\n",
+                "Connection: close\r\n",
                 status, (long)st.st_size);
             write_all(client_fd, header_buf, header_len);
+            apply_common_headers(client_fd);
+            write_all(client_fd, "\r\n", 2);
 
             if (st.st_size > SENDFILE_THRESHOLD) {
                 off_t offset = 0;
@@ -378,7 +398,7 @@ static void send_error_page_for_file(int client_fd, int status, const char *root
     send_error_page(client_fd, status, root_dir);
 }
 
-static void render_listing(int client_fd, const char *fs_path, const char *url_path) {
+static void render_listing(int client_fd, const char *fs_path, const char *url_path, const char *origin) {
     DIR *dir = opendir(fs_path);
     if (!dir) {
         send_error_page_for_file(client_fd, 403, server_config.root_dir);
@@ -484,10 +504,11 @@ static void render_listing(int client_fd, const char *fs_path, const char *url_p
         "HTTP/1.1 200 OK\r\n"
         "Content-Type: text/html; charset=utf-8\r\n"
         "Content-Length: %zu\r\n"
-        "Server: ssserve\r\n"
-        "\r\n",
+        "Server: ssserve\r\n",
         body_len);
     write_all(client_fd, header_buf, header_len);
+    write_extra_headers(client_fd, origin, url_path);
+    write_all(client_fd, "\r\n", 2);
     write_all(client_fd, body, body_len);
     free(body);
 }
@@ -543,6 +564,11 @@ static int parse_http_request(ConnectionState *conn) {
             while (*conn->range_header == ' ') conn->range_header++;
             char *end = strstr(conn->range_header, "\r\n");
             if (end) *end = '\0';
+        } else if (strncmp(header, "Origin:", 7) == 0) {
+            conn->origin = header + 7;
+            while (*conn->origin == ' ') conn->origin++;
+            char *end = strstr(conn->origin, "\r\n");
+            if (end) *end = '\0';
         }
         header = next_header + 2;
     }
@@ -557,10 +583,47 @@ static void send_redirect(int client_fd, const char *location, int status) {
         "Location: %s\r\n"
         "Content-Length: 0\r\n"
         "Server: ssserve\r\n"
-        "Connection: close\r\n"
-        "\r\n",
+        "Connection: close\r\n",
         status, location);
     write_all(client_fd, header, len);
+    write_extra_headers(client_fd, NULL, NULL);
+    write_all(client_fd, "\r\n", 2);
+}
+
+static void apply_cors_headers(int client_fd, const char *origin) {
+    if (!server_config.cors) return;
+    char headers[512];
+    int len = snprintf(headers, sizeof(headers),
+        "Access-Control-Allow-Origin: *\r\n"
+        "Access-Control-Allow-Headers: *\r\n"
+        "Access-Control-Allow-Methods: GET, HEAD, OPTIONS\r\n"
+        "Access-Control-Allow-Credentials: true\r\n");
+    write_all(client_fd, headers, len);
+}
+
+static void apply_common_headers(int client_fd) {
+    if (!server_config.caching) {
+        write_all(client_fd, "Cache-Control: no-store\r\n", 25);
+    }
+}
+
+static void apply_custom_headers(int client_fd, const char *url_path) {
+    if (!url_path) return;
+    for (int i = 0; i < server_config.num_header_rules; i++) {
+        HeaderRule *rule = &server_config.header_rules[i];
+        if (fnmatch(rule->pattern, url_path, 0) == 0) {
+            for (int j = 0; j < rule->count; j++) {
+                write_all(client_fd, rule->lines[j], strlen(rule->lines[j]));
+                write_all(client_fd, "\r\n", 2);
+            }
+        }
+    }
+}
+
+static void write_extra_headers(int client_fd, const char *origin, const char *url_path) {
+    apply_custom_headers(client_fd, url_path);
+    apply_cors_headers(client_fd, origin);
+    apply_common_headers(client_fd);
 }
 
 static int check_callbacks(ConnectionState *conn, char *new_path, size_t new_path_size, int *status_code) {
@@ -623,21 +686,46 @@ static int parse_range(const char *range_header, int file_size, int *start, int 
 static void handle_request(ConnectionState *conn) {
     if (conn->method == HTTP_OPTIONS) {
         char response[] =
-            "HTTP/1.1 200 OK\r\n"
+            "HTTP/1.1 204 No Content\r\n"
             "Allow: GET, HEAD, OPTIONS\r\n"
             "Content-Length: 0\r\n"
-            "Server: ssserve\r\n"
-            "\r\n";
+            "Server: ssserve\r\n";
         write_all(conn->fd, response, strlen(response));
+        write_extra_headers(conn->fd, conn->origin, conn->path);
+        write_all(conn->fd, "\r\n", 2);
         return;
     }
 
     /* Normalize path: URL decode, collapse slashes, resolve . and .., security checks */
     char normalized[MAX_PATH];
     if (normalize_path(conn->path, normalized, sizeof(normalized)) < 0) {
-        char response[] = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
+        char response[] = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n";
         write_all(conn->fd, response, strlen(response));
+        write_extra_headers(conn->fd, conn->origin, NULL);
+        write_all(conn->fd, "\r\n", 2);
         return;
+    }
+
+    /* Check for clean URLs: /foo.html → redirect to /foo */
+    if (server_config.clean_urls && conn->method == HTTP_GET) {
+        size_t path_len = strlen(normalized);
+        if (path_len > 5 && strcmp(normalized + path_len - 5, ".html") == 0) {
+            char new_path[MAX_PATH];
+            if (strcmp(normalized, "/index.html") == 0) {
+                snprintf(new_path, sizeof(new_path), "/");
+            } else {
+                snprintf(new_path, sizeof(new_path), "%.*s", (int)(path_len - 5), normalized);
+            }
+            /* Only redirect if the .html file exists (verified by resolving with .html) */
+            char html_full_path[PATH_MAX];
+            if (resolve_path(normalized, server_config.root_dir, html_full_path, sizeof(html_full_path)) == 0) {
+                struct stat html_st;
+                if (stat(html_full_path, &html_st) == 0) {
+                    send_redirect(conn->fd, new_path, 301);
+                    return;
+                }
+            }
+        }
     }
 
     /* Check Python callbacks for redirects/rewrites */
@@ -654,21 +742,42 @@ static void handle_request(ConnectionState *conn) {
         conn->path[MAX_PATH - 1] = '\0';
         /* Re-normalize the rewritten path */
         if (normalize_path(conn->path, normalized, sizeof(normalized)) < 0) {
-            char response[] = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
+            char response[] = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n";
             write_all(conn->fd, response, strlen(response));
+            write_extra_headers(conn->fd, conn->origin, NULL);
+            write_all(conn->fd, "\r\n", 2);
             return;
         }
     }
 
     char full_path[PATH_MAX];
     if (resolve_path(normalized, server_config.root_dir, full_path, sizeof(full_path)) < 0) {
-        char response[] = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
+        char response[] = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n";
         write_all(conn->fd, response, strlen(response));
+        write_extra_headers(conn->fd, conn->origin, NULL);
+        write_all(conn->fd, "\r\n", 2);
         return;
     }
 
     struct stat st;
     if (stat(full_path, &st) < 0) {
+        /* Try appending .html for clean URLs (e.g., /about → /about.html) */
+        if (server_config.clean_urls) {
+            size_t norm_len = strlen(normalized);
+            if (norm_len < MAX_PATH - 5) {
+                char html_path[PATH_MAX];
+                snprintf(html_path, sizeof(html_path), "%s.html", normalized);
+                char html_full_path[PATH_MAX];
+                if (resolve_path(html_path, server_config.root_dir, html_full_path, sizeof(html_full_path)) == 0) {
+                    if (stat(html_full_path, &st) == 0 && S_ISREG(st.st_mode)) {
+                        snprintf(full_path, sizeof(full_path), "%s", html_full_path);
+                        strncpy(conn->path, html_path, MAX_PATH - 1);
+                        conn->path[MAX_PATH - 1] = '\0';
+                        goto serve_file;
+                    }
+                }
+            }
+        }
         send_error_page_for_file(conn->fd, 404, server_config.root_dir);
         return;
     }
@@ -684,10 +793,11 @@ static void handle_request(ConnectionState *conn) {
                 "HTTP/1.1 301 Moved Permanently\r\n"
                 "Location: %s\r\n"
                 "Content-Length: 0\r\n"
-                "Server: ssserve\r\n"
-                "\r\n",
+                "Server: ssserve\r\n",
                 redirect_url);
             write_all(conn->fd, response, resp_len);
+            write_extra_headers(conn->fd, conn->origin, normalized);
+            write_all(conn->fd, "\r\n", 2);
             return;
         }
 
@@ -695,6 +805,13 @@ static void handle_request(ConnectionState *conn) {
         char index_path[PATH_MAX];
         snprintf(index_path, sizeof(index_path), "%s/index.html", full_path);
         if (stat(index_path, &st) == 0) {
+            /* Build URL path for header matching: normalized.rstrip("/") + "/index.html" */
+            size_t norm_len = strlen(normalized);
+            if (norm_len > 0 && normalized[norm_len - 1] == '/') {
+                snprintf(conn->path, MAX_PATH, "%sindex.html", normalized);
+            } else {
+                snprintf(conn->path, MAX_PATH, "%s/index.html", normalized);
+            }
             snprintf(full_path, sizeof(full_path), "%s", index_path);
             goto serve_file;
         }
@@ -707,7 +824,7 @@ static void handle_request(ConnectionState *conn) {
         }
 
         /* Directory listing */
-        render_listing(conn->fd, full_path, normalized);
+        render_listing(conn->fd, full_path, normalized, conn->origin);
         return;
     }
 
@@ -739,10 +856,11 @@ serve_file:
         header_len = snprintf(header_buf, sizeof(header_buf),
             "HTTP/1.1 304 Not Modified\r\n"
             "ETag: %s\r\n"
-            "Server: ssserve\r\n"
-            "\r\n",
+            "Server: ssserve\r\n",
             etag_buf);
         write_all(conn->fd, header_buf, header_len);
+        write_extra_headers(conn->fd, conn->origin, conn->path);
+        write_all(conn->fd, "\r\n", 2);
         return;
     }
 
@@ -754,12 +872,13 @@ serve_file:
             if ((long)st.st_mtime <= (long)ims_time) {
                 header_len = snprintf(header_buf, sizeof(header_buf),
                     "HTTP/1.1 304 Not Modified\r\n"
-                    "%s%s"
-                    "Server: ssserve\r\n"
-                    "\r\n",
+                    "%s%s\r\n"
+                    "Server: ssserve\r\n",
                     etag_enabled ? "ETag: " : "",
                     etag_enabled ? etag_buf : "");
                 write_all(conn->fd, header_buf, header_len);
+                write_extra_headers(conn->fd, conn->origin, conn->path);
+                write_all(conn->fd, "\r\n", 2);
                 return;
             }
         }
@@ -772,11 +891,14 @@ serve_file:
             "Content-Length: %ld\r\n"
             "Server: ssserve\r\n"
             "%s%s\r\n"
-            "\r\n",
+            "%s",
             mime_type, (long)st.st_size,
             etag_enabled ? "ETag: " : "Last-Modified: ",
-            etag_enabled ? etag_buf : date_buf);
+            etag_enabled ? etag_buf : date_buf,
+            etag_enabled ? "" : "Accept-Ranges: bytes\r\n");
         write_all(conn->fd, header_buf, header_len);
+        write_extra_headers(conn->fd, conn->origin, conn->path);
+        write_all(conn->fd, "\r\n", 2);
         return;
     }
 
@@ -787,9 +909,9 @@ serve_file:
         range_valid = 1;
     }
 
-    /* Check if gzip is acceptable (skip gzip for range requests) */
+    /* Check if gzip is acceptable (skip gzip for range requests and no_compression) */
     int use_gzip = 0;
-    if (!range_valid && conn->accept_encoding && strstr(conn->accept_encoding, "gzip")) {
+    if (!range_valid && !server_config.no_compression && conn->accept_encoding && strstr(conn->accept_encoding, "gzip")) {
         use_gzip = 1;
     }
 
@@ -822,12 +944,13 @@ serve_file:
                     "Content-Length: %zu\r\n"
                     "Content-Encoding: gzip\r\n"
                     "Server: ssserve\r\n"
-                    "%s%s\r\n"
-                    "\r\n",
+                    "%s%s\r\n",
                     mime_type, compressed_len,
                     etag_enabled ? "ETag: " : "Last-Modified: ",
                     etag_enabled ? etag_buf : date_buf);
                 write_all(conn->fd, header_buf, header_len);
+                write_extra_headers(conn->fd, conn->origin, conn->path);
+                write_all(conn->fd, "\r\n", 2);
                 write_all(conn->fd, compressed, compressed_len);
                 free(compressed);
                 return;
@@ -849,12 +972,13 @@ serve_file:
             "Content-Length: %d\r\n"
             "Content-Range: bytes %d-%d/%ld\r\n"
             "Server: ssserve\r\n"
-            "%s%s\r\n"
-            "\r\n",
+            "%s%s\r\n",
             mime_type, range_size, range_start, range_end, (long)st.st_size,
             etag_enabled ? "ETag: " : "Last-Modified: ",
             etag_enabled ? etag_buf : date_buf);
         write_all(conn->fd, header_buf, header_len);
+        write_extra_headers(conn->fd, conn->origin, conn->path);
+        write_all(conn->fd, "\r\n", 2);
 
         lseek(file_fd, range_start, SEEK_SET);
         if (range_size > SENDFILE_THRESHOLD) {
@@ -885,11 +1009,14 @@ serve_file:
             "Content-Length: %ld\r\n"
             "Server: ssserve\r\n"
             "%s%s\r\n"
-            "\r\n",
+            "%s",
             mime_type, (long)st.st_size,
             etag_enabled ? "ETag: " : "Last-Modified: ",
-            etag_enabled ? etag_buf : date_buf);
+            etag_enabled ? etag_buf : date_buf,
+            etag_enabled ? "" : "Accept-Ranges: bytes\r\n");
         write_all(conn->fd, header_buf, header_len);
+        write_extra_headers(conn->fd, conn->origin, conn->path);
+        write_all(conn->fd, "\r\n", 2);
 
         if (st.st_size > SENDFILE_THRESHOLD) {
             off_t offset = 0;
@@ -993,14 +1120,18 @@ static PyObject *py_serve(PyObject *self, PyObject *args, PyObject *kw) {
     int etag = 0;
     int no_compression = 0;
     int symlinks = 0;
+    int clean_urls = 1;
     PyObject *config_callback = NULL;
+    PyObject *custom_headers = NULL;
 
     static char *kwlist[] = {"port", "root_dir", "num_workers", "cors", "caching",
-                            "etag", "no_compression", "symlinks", "config_callback", NULL};
+                            "etag", "no_compression", "symlinks", "config_callback",
+                            "custom_headers", "clean_urls", NULL};
 
-    if (!PyArg_ParseTupleAndKeywords(args, kw, "is|iiiiiiO", kwlist,
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "is|iiiiiiOOi", kwlist,
                                      &port, &root_dir, &num_workers, &cors, &caching,
-                                     &etag, &no_compression, &symlinks, &config_callback))
+                                     &etag, &no_compression, &symlinks, &config_callback,
+                                     &custom_headers, &clean_urls))
         return NULL;
 
     server_config.epoll_fd = epoll_create1(0);
@@ -1058,6 +1189,50 @@ static PyObject *py_serve(PyObject *self, PyObject *args, PyObject *kw) {
     server_config.running = 1;
     server_config.config_callback = config_callback;
     server_config.etag = etag;
+    server_config.cors = cors;
+    server_config.caching = caching;
+    server_config.no_compression = no_compression;
+    server_config.clean_urls = clean_urls;
+
+    /* Parse custom headers: list of tuples (pattern, key, value) */
+    server_config.header_rules = NULL;
+    server_config.num_header_rules = 0;
+    if (custom_headers && custom_headers != Py_None && PyList_Check(custom_headers)) {
+        Py_ssize_t num_tuples = PyList_Size(custom_headers);
+        if (num_tuples > 0) {
+            server_config.header_rules = (HeaderRule *)malloc(num_tuples * sizeof(HeaderRule));
+            if (!server_config.header_rules) {
+                PyErr_NoMemory();
+                return NULL;
+            }
+            server_config.num_header_rules = (int)num_tuples;
+            for (Py_ssize_t i = 0; i < num_tuples; i++) {
+                PyObject *tuple = PyList_GetItem(custom_headers, i);
+                if (!PyTuple_Check(tuple) || PyTuple_Size(tuple) != 3) {
+                    PyErr_SetString(PyExc_TypeError, "custom_headers must be list of (pattern, key, value) tuples");
+                    return NULL;
+                }
+                const char *pattern = PyUnicode_AsUTF8(PyTuple_GetItem(tuple, 0));
+                const char *key = PyUnicode_AsUTF8(PyTuple_GetItem(tuple, 1));
+                const char *value = PyUnicode_AsUTF8(PyTuple_GetItem(tuple, 2));
+                if (!pattern || !key) {
+                    PyErr_SetString(PyExc_ValueError, "Invalid header tuple");
+                    return NULL;
+                }
+                server_config.header_rules[i].pattern = strdup(pattern);
+                server_config.header_rules[i].count = 1;
+                server_config.header_rules[i].lines = (char **)malloc(sizeof(char *));
+                char line_buf[1024];
+                int line_len;
+                if (value && value[0]) {
+                    line_len = snprintf(line_buf, sizeof(line_buf), "%s: %s", key, value);
+                } else {
+                    line_len = snprintf(line_buf, sizeof(line_buf), "%s:", key);
+                }
+                server_config.header_rules[i].lines[0] = strndup(line_buf, line_len);
+            }
+        }
+    }
 
     struct epoll_event ev;
     ev.events = EPOLLIN | EPOLLET | EPOLLEXCLUSIVE;
