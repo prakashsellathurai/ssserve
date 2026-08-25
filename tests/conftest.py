@@ -57,18 +57,33 @@ def _populate_test_dir(base: Path) -> None:
         (many / f"file-{i:03d}.txt").write_text(f"file {i}")
 
 
+def _get_python() -> str:
+    venv_python = (
+        Path(__file__).resolve().parent.parent
+        / ".venv"
+        / ("Scripts" if sys.platform == "win32" else "bin")
+        / ("python.exe" if sys.platform == "win32" else "python")
+    )
+    try:
+        if venv_python.is_file():
+            return str(venv_python)
+    except OSError:
+        pass
+    return sys.executable
+
+
 def _wait_for_server(port: int, proc: subprocess.Popen, timeout: float = 15.0) -> None:
     deadline = time.time() + timeout
     while time.time() < deadline:
         if proc.poll() is not None:
             pytest.fail(f"Server exited prematurely with code {proc.returncode}")
         try:
-            with socket.create_connection(("localhost", port), timeout=0.5) as s:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5) as s:
                 s.sendall(b"GET / HTTP/1.0\r\n\r\n")
                 if b"HTTP/" in s.recv(128):
                     return
         except (ConnectionRefusedError, OSError, socket.timeout):
-            time.sleep(0.1)
+            time.sleep(0.02)
     pytest.fail(f"Server did not start on port {port} within {timeout}s")
 
 
@@ -91,8 +106,7 @@ def _start_server(
     if config:
         (serve_dir / "serve.json").write_text(json.dumps(config))
     port = find_free_port()
-    venv_python = Path(__file__).resolve().parent.parent / ".venv" / "bin" / "python"
-    python = str(venv_python) if venv_python.exists() else sys.executable
+    python = _get_python()
     args = (
         [python, "-m", "ssserve", str(serve_dir), "-l", str(port), "--no-port-switching", "-L"]
         + (extra_args or [])
@@ -100,26 +114,35 @@ def _start_server(
     )
     if use_python_server:
         args = list(args) + ["--python-server"]
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
     proc = subprocess.Popen(
         args,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        env=env,
     )
     _wait_for_server(port, proc)
     return proc, port
 
 
+@pytest.fixture(scope="session")
+def session_test_dir(tmp_path_factory) -> Path:
+    base = tmp_path_factory.mktemp("session_test_dir")
+    _populate_test_dir(base)
+    return base
+
+
 @pytest.fixture
-def test_dir(tmp_path: Path) -> Path:
-    _populate_test_dir(tmp_path)
+def test_dir(tmp_path: Path, session_test_dir: Path) -> Path:
+    shutil.copytree(session_test_dir, tmp_path, dirs_exist_ok=True)
     return tmp_path
 
 
-@pytest.fixture
-def server_url(test_dir: Path, request) -> str:
+@pytest.fixture(scope="session")
+def server_url(session_test_dir: Path, request) -> str:
     use_python = request.config.getoption("--python-server")
-    proc, port = _start_server(test_dir, use_python_server=use_python)
-    yield f"http://localhost:{port}"
+    proc, port = _start_server(session_test_dir, use_python_server=use_python)
+    yield f"http://127.0.0.1:{port}"
     _stop_server(proc)
 
 
@@ -131,7 +154,7 @@ def server_factory(request) -> type:
     def _start(serve_dir: Path, extra_args: list[str] | None = None, config: dict | None = None) -> str:
         proc, port = _start_server(serve_dir, extra_args=extra_args, config=config, use_python_server=use_python)
         started.append(proc)
-        return f"http://localhost:{port}"
+        return f"http://127.0.0.1:{port}"
 
     yield _start
 
@@ -167,7 +190,7 @@ def profiled_server(test_dir: Path, request) -> tuple[str, Path]:
     use_python = request.config.getoption("--python-server")
 
     proc, port = _start_server(test_dir, profile_path=prof_path, use_python_server=use_python)
-    url = f"http://localhost:{port}"
+    url = f"http://127.0.0.1:{port}"
 
     _warm_up(url)
     yield url, PROFILES_DIR
@@ -192,14 +215,13 @@ def memray_server(test_dir: Path, request) -> tuple[str, Path]:
         pytest.skip("memray not installed")
         # Need a dummy yield for cleanup
         proc, port = _start_server(test_dir, use_python_server=use_python)
-        yield f"http://localhost:{port}", PROFILES_DIR
+        yield f"http://127.0.0.1:{port}", PROFILES_DIR
         _stop_server(proc)
         return
 
     # Start server under memray tracking
     port = find_free_port()
-    venv_python = Path(__file__).resolve().parent.parent / ".venv" / "bin" / "python"
-    python = str(venv_python) if venv_python.exists() else sys.executable
+    python = _get_python()
 
     args = [
         python, "-m", "memray", "run", "-o", str(out_path),
@@ -208,13 +230,15 @@ def memray_server(test_dir: Path, request) -> tuple[str, Path]:
     ]
     if use_python:
         args.append("--python-server")
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
     proc = subprocess.Popen(
         args,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        env=env,
     )
     _wait_for_server(port, proc)
-    url = f"http://localhost:{port}"
+    url = f"http://127.0.0.1:{port}"
 
     _warm_up(url)
     yield url, PROFILES_DIR
@@ -228,14 +252,22 @@ def memray_server(test_dir: Path, request) -> tuple[str, Path]:
 def sampled_server(test_dir: Path, request) -> tuple[str, Path]:
     use_python = request.config.getoption("--python-server")
     proc, port = _start_server(test_dir, use_python_server=use_python)
-    url = f"http://localhost:{port}"
+    url = f"http://127.0.0.1:{port}"
 
     py_spy = shutil.which("py-spy")
     if not py_spy:
-        venv_pyspy = Path(__file__).resolve().parent.parent / ".venv" / "bin" / "py-spy"
-        if venv_pyspy.exists():
-            py_spy = str(venv_pyspy)
-        else:
+        venv_pyspy = (
+            Path(__file__).resolve().parent.parent
+            / ".venv"
+            / ("Scripts" if sys.platform == "win32" else "bin")
+            / ("py-spy.exe" if sys.platform == "win32" else "py-spy")
+        )
+        try:
+            if venv_pyspy.is_file():
+                py_spy = str(venv_pyspy)
+        except OSError:
+            pass
+        if not py_spy:
             pytest.skip("py-spy not installed")
             yield url, PROFILES_DIR
             _stop_server(proc)

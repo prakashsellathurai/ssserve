@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.slow
+
 
 def _measure_latency(url: str, n: int = 20) -> dict:
     latencies = []

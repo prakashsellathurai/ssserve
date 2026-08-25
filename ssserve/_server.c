@@ -439,8 +439,11 @@ static int cmp_dir_entry(const void *a, const void *b) {
 
 static void write_extra_headers(int client_fd, const char *origin, const char *url_path);
 static void apply_common_headers(int client_fd);
+static void apply_common_headers_buf(HeaderBuf *hb);
 static void apply_cors_headers(int client_fd, const char *origin);
+static void apply_cors_headers_buf(HeaderBuf *hb, const char *origin);
 static void apply_custom_headers(int client_fd, const char *url_path);
+static void apply_custom_headers_buf(HeaderBuf *hb, const char *url_path);
 static int inject_live_reload_script(const char *content, size_t content_len,
                                      char **out_content, size_t *out_len);
 
@@ -462,18 +465,15 @@ static void send_error_page(int client_fd, int status, const char *root_dir) {
         "<body><h1>%d</h1><p>%s</p></body></html>",
         title, status, message);
 
-    char header[512];
-    int header_len = snprintf(header, sizeof(header),
-        "HTTP/1.1 %d %s\r\n"
-        "Content-Type: text/html; charset=utf-8\r\n"
-        "Content-Length: %d\r\n"
-        "Server: ssserve\r\n"
-        "Connection: close\r\n",
-        status, title, body_len);
-
-    write_all(client_fd, header, header_len);
-    apply_common_headers(client_fd);
-    write_all(client_fd, "\r\n", 2);
+    HeaderBuf hb;
+    hb_init(&hb);
+    hb_appendf(&hb, "HTTP/1.1 %d %s\r\n", status, title);
+    hb_append(&hb, "Content-Type: text/html; charset=utf-8\r\n");
+    hb_appendf(&hb, "Content-Length: %d\r\n", body_len);
+    hb_append(&hb, "Server: ssserve\r\nConnection: close\r\n");
+    apply_common_headers_buf(&hb);
+    hb_crlf(&hb);
+    hb_write(client_fd, &hb);
     write_all(client_fd, body, body_len);
 }
 
@@ -485,17 +485,15 @@ static void send_error_page_for_file(int client_fd, int status, const char *root
     if (stat(error_path, &st) == 0) {
         int file_fd = open(error_path, O_RDONLY);
         if (file_fd >= 0) {
-            char header_buf[512];
-            int header_len = snprintf(header_buf, sizeof(header_buf),
-                "HTTP/1.1 %d\r\n"
-                "Content-Type: text/html; charset=utf-8\r\n"
-                "Content-Length: %ld\r\n"
-                "Server: ssserve\r\n"
-                "Connection: close\r\n",
-                status, (long)st.st_size);
-            write_all(client_fd, header_buf, header_len);
-            apply_common_headers(client_fd);
-            write_all(client_fd, "\r\n", 2);
+            HeaderBuf hb;
+            hb_init(&hb);
+            hb_appendf(&hb, "HTTP/1.1 %d\r\n", status);
+            hb_append(&hb, "Content-Type: text/html; charset=utf-8\r\n");
+            hb_appendf(&hb, "Content-Length: %ld\r\n", (long)st.st_size);
+            hb_append(&hb, "Server: ssserve\r\nConnection: close\r\n");
+            apply_common_headers_buf(&hb);
+            hb_crlf(&hb);
+            hb_write(client_fd, &hb);
 
             if (st.st_size > SENDFILE_THRESHOLD) {
                 off_t offset = 0;
@@ -722,17 +720,14 @@ static int parse_http_request(ConnectionState *conn) {
 }
 
 static void send_redirect(int client_fd, const char *location, int status) {
-    char header[1024];
-    int len = snprintf(header, sizeof(header),
-        "HTTP/1.1 %d Moved Permanently\r\n"
-        "Location: %s\r\n"
-        "Content-Length: 0\r\n"
-        "Server: ssserve\r\n"
-        "Connection: close\r\n",
-        status, location);
-    write_all(client_fd, header, len);
-    write_extra_headers(client_fd, NULL, NULL);
-    write_all(client_fd, "\r\n", 2);
+    HeaderBuf hb;
+    hb_init(&hb);
+    hb_appendf(&hb, "HTTP/1.1 %d Moved Permanently\r\n", status);
+    hb_appendf(&hb, "Location: %s\r\n", location);
+    hb_append(&hb, "Content-Length: 0\r\nServer: ssserve\r\nConnection: close\r\n");
+    write_extra_headers_buf(&hb, NULL, NULL);
+    hb_crlf(&hb);
+    hb_write(client_fd, &hb);
 }
 
 static void apply_cors_headers(int client_fd, const char *origin) {
@@ -765,10 +760,43 @@ static void apply_custom_headers(int client_fd, const char *url_path) {
     }
 }
 
+static void apply_cors_headers_buf(HeaderBuf *hb, const char *origin) {
+    if (!server_config.cors) return;
+    hb_append(hb, "Access-Control-Allow-Origin: *\r\n"
+                  "Access-Control-Allow-Headers: *\r\n"
+                  "Access-Control-Allow-Methods: GET, HEAD, OPTIONS\r\n"
+                  "Access-Control-Allow-Credentials: true\r\n");
+}
+
+static void apply_common_headers_buf(HeaderBuf *hb) {
+    if (!server_config.caching) {
+        hb_append(hb, "Cache-Control: no-store\r\n");
+    }
+}
+
+static void apply_custom_headers_buf(HeaderBuf *hb, const char *url_path) {
+    if (!url_path) return;
+    for (int i = 0; i < server_config.num_header_rules; i++) {
+        HeaderRule *rule = &server_config.header_rules[i];
+        if (fnmatch(rule->pattern, url_path, 0) == 0) {
+            for (int j = 0; j < rule->count; j++) {
+                hb_append(hb, rule->lines[j]);
+                hb_append(hb, "\r\n");
+            }
+        }
+    }
+}
+
 static void write_extra_headers(int client_fd, const char *origin, const char *url_path) {
     apply_custom_headers(client_fd, url_path);
     apply_cors_headers(client_fd, origin);
     apply_common_headers(client_fd);
+}
+
+static void write_extra_headers_buf(HeaderBuf *hb, const char *origin, const char *url_path) {
+    apply_custom_headers_buf(hb, url_path);
+    apply_cors_headers_buf(hb, origin);
+    apply_common_headers_buf(hb);
 }
 
 static int check_callbacks(ConnectionState *conn, char *new_path, size_t new_path_size, int *status_code) {

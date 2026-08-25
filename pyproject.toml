@@ -31,13 +31,15 @@ libraries = ["pthread", "z"]
 markers = [
     "profile: profiling tests (CPU, memory, sampling)",
     "c_server_config: C server config for redirects/rewrites",
+    "slow: slow tests (performance, resources, profiling)",
 ]
 testpaths = ["tests"]
-addopts = ""
+addopts = "-n auto"
 
 [dependency-groups]
 dev = [
     "pytest>=8",
+    "pytest-xdist>=3.0",
     "psutil>=6",
     "asv>=0.6.5",
     "setuptools>=83.0.0",
