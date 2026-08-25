@@ -408,26 +408,34 @@ static void handle_request(ConnectionState *conn) {
 
     int etag_enabled = server_config.etag;
     char etag_buf[64] = {0};
+    char date_buf[64] = {0};
     if (etag_enabled) {
         compute_etag((long)st.st_mtime, (long)st.st_size, etag_buf, sizeof(etag_buf));
+    } else {
+        struct tm *gmt = gmtime(&st.st_mtime);
+        strftime(date_buf, sizeof(date_buf), "%a, %d %b %Y %H:%M:%S GMT", gmt);
     }
 
-    /* 304 Not Modified: If-None-Match */
+    /* 304 Not Modified: check ETag first, then If-Modified-Since as fallback */
+    int etag_match = 0;
     if (etag_enabled && conn->if_none_match) {
         if (strcmp(conn->if_none_match, etag_buf) == 0) {
-            header_len = snprintf(header_buf, sizeof(header_buf),
-                "HTTP/1.1 304 Not Modified\r\n"
-                "ETag: %s\r\n"
-                "Server: ssserve\r\n"
-                "\r\n",
-                etag_buf);
-            write_all(conn->fd, header_buf, header_len);
-            return;
+            etag_match = 1;
         }
     }
 
-    /* 304 Not Modified: If-Modified-Since (when ETag disabled) */
-    if (!etag_enabled && conn->if_modified_since) {
+    if (etag_match) {
+        header_len = snprintf(header_buf, sizeof(header_buf),
+            "HTTP/1.1 304 Not Modified\r\n"
+            "ETag: %s\r\n"
+            "Server: ssserve\r\n"
+            "\r\n",
+            etag_buf);
+        write_all(conn->fd, header_buf, header_len);
+        return;
+    }
+
+    if (conn->if_modified_since) {
         struct tm ims_tm;
         memset(&ims_tm, 0, sizeof(ims_tm));
         if (strptime(conn->if_modified_since, "%a, %d %b %Y %H:%M:%S", &ims_tm) != NULL) {
@@ -435,8 +443,11 @@ static void handle_request(ConnectionState *conn) {
             if ((long)st.st_mtime <= (long)ims_time) {
                 header_len = snprintf(header_buf, sizeof(header_buf),
                     "HTTP/1.1 304 Not Modified\r\n"
+                    "%s%s"
                     "Server: ssserve\r\n"
-                    "\r\n");
+                    "\r\n",
+                    etag_enabled ? "ETag: " : "",
+                    etag_enabled ? etag_buf : "");
                 write_all(conn->fd, header_buf, header_len);
                 return;
             }
@@ -453,7 +464,7 @@ static void handle_request(ConnectionState *conn) {
             "\r\n",
             mime_type, (long)st.st_size,
             etag_enabled ? "ETag: " : "Last-Modified: ",
-            etag_enabled ? etag_buf : "");
+            etag_enabled ? etag_buf : date_buf);
         write_all(conn->fd, header_buf, header_len);
         return;
     }
@@ -498,7 +509,7 @@ static void handle_request(ConnectionState *conn) {
                     "\r\n",
                     mime_type, compressed_len,
                     etag_enabled ? "ETag: " : "Last-Modified: ",
-                    etag_enabled ? etag_buf : "");
+                    etag_enabled ? etag_buf : date_buf);
                 write_all(conn->fd, header_buf, header_len);
                 write_all(conn->fd, compressed, compressed_len);
                 free(compressed);
@@ -523,7 +534,7 @@ static void handle_request(ConnectionState *conn) {
         "\r\n",
         mime_type, (long)st.st_size,
         etag_enabled ? "ETag: " : "Last-Modified: ",
-        etag_enabled ? etag_buf : "");
+        etag_enabled ? etag_buf : date_buf);
     write_all(conn->fd, header_buf, header_len);
 
     if (st.st_size > SENDFILE_THRESHOLD) {
