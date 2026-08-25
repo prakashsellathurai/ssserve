@@ -46,6 +46,9 @@ def test_dir(tmp_path: Path) -> Path:
     (tmp_path / "index.html").write_text("<h1>Home</h1>")
     (tmp_path / "file-1kb.bin").write_bytes(b"x" * 1024)
     (tmp_path / "404.html").write_text("<h1>Custom 404</h1>")
+    # Create a file that could be accessed via traversal if not blocked
+    parent = tmp_path.parent / "escape_test.txt"
+    parent.write_text("escaped")
     return tmp_path
 
 
@@ -109,3 +112,32 @@ class TestCServer:
         assert len(body) == 0
         assert "Content-Length" in resp.headers
         assert int(resp.headers["Content-Length"]) == 1024
+
+    def test_c_server_path_traversal_rejected(self, c_server: str):
+        status, _, _ = _get(f"{c_server}/../../../etc/passwd")
+        # Should be rejected (400/403), not just not-found (404)
+        assert status in (400, 403), f"Path traversal not rejected, got {status}"
+
+    def test_c_server_double_slash_normalized(self, c_server: str):
+        status, _, body = _get(f"{c_server}//file-1kb.bin")
+        assert status == 200
+        assert len(body) == 1024
+
+    def test_c_server_percent_encoded(self, c_server: str):
+        status, _, body = _get(f"{c_server}/file%2D1kb.bin")
+        assert status == 200
+        assert len(body) == 1024
+
+    def test_c_server_dot_segments(self, c_server: str):
+        status, _, body = _get(f"{c_server}/./file-1kb.bin")
+        assert status == 200
+        assert len(body) == 1024
+
+    def test_c_server_null_byte_rejected(self, c_server: str):
+        status, _, _ = _get(f"{c_server}/file%00.html")
+        assert status in (400, 403, 404), f"Null byte not rejected, got {status}"
+
+    def test_c_server_encoded_traversal_rejected(self, c_server: str):
+        # %2e%2e = .. (encoded dots)
+        status, _, _ = _get(f"{c_server}/%2e%2e/%2e%2e/%2e%2e/etc/passwd")
+        assert status in (400, 403), f"Encoded path traversal not rejected, got {status}"

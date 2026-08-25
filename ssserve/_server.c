@@ -91,6 +91,148 @@ static const char *get_mime_type(const char *path) {
     return "application/octet-stream";
 }
 
+static int url_decode(const char *src, char *dst, size_t dst_size) {
+    size_t i = 0, j = 0;
+    while (src[i] && j < dst_size - 1) {
+        if (src[i] == '%' && src[i + 1] && src[i + 2]) {
+            char hex[3] = { src[i + 1], src[i + 2], '\0' };
+            dst[j++] = (char)strtol(hex, NULL, 16);
+            i += 3;
+        } else {
+            dst[j++] = src[i++];
+        }
+    }
+    dst[j] = '\0';
+    return (j < dst_size - 1) ? 0 : -1;
+}
+
+static int normalize_path(const char *raw, char *out, size_t out_size) {
+    char decoded[MAX_PATH];
+    if (url_decode(raw, decoded, sizeof(decoded)) < 0) return -1;
+
+    /* Reject null bytes */
+    if (strchr(decoded, '\0') != decoded + strlen(decoded)) return -1;
+
+    /* Ensure starts with / */
+    const char *p = decoded;
+    if (*p != '/') {
+        if (snprintf(out, out_size, "/%s", decoded) >= (int)out_size) return -1;
+        p = out;
+    } else {
+        strncpy(out, decoded, out_size - 1);
+        out[out_size - 1] = '\0';
+        p = out;
+    }
+
+    /* Collapse double slashes */
+    char *w = out;
+    const char *r = p;
+    while (*r) {
+        if (*r == '/' && *(r + 1) == '/') {
+            r++;
+            continue;
+        }
+        *w++ = *r++;
+    }
+    *w = '\0';
+
+    /* Resolve . and .. segments, reject if .. escapes root */
+    char resolved[MAX_PATH];
+    char *s = resolved, *end = resolved + sizeof(resolved) - 1;
+    const char *src = out;
+    *s = '\0';
+    int segments = 0; /* Count of directory segments in resolved path */
+
+    while (*src) {
+        while (*src == '/') {
+            if (s < end) *s++ = '/';
+            src++;
+        }
+        if (*src == '\0') break;
+
+        const char *seg_start = src;
+        while (*src && *src != '/') src++;
+        size_t seg_len = src - seg_start;
+
+        if (seg_len == 1 && seg_start[0] == '.') {
+            /* Skip . */
+            if (s > resolved && *(s - 1) == '/') s--;
+        } else if (seg_len == 2 && seg_start[0] == '.' && seg_start[1] == '.') {
+            /* Go up .. - must have a segment to remove */
+            if (segments <= 0) return -1; /* Escapes root */
+            segments--;
+            if (s > resolved && *(s - 1) == '/') s--;
+            while (s > resolved && *(s - 1) != '/') s--;
+        } else {
+            if (s + seg_len >= end) return -1;
+            memcpy(s, seg_start, seg_len);
+            s += seg_len;
+            segments++;
+        }
+    }
+    if (s == resolved) *s++ = '/';
+    *s = '\0';
+
+    strncpy(out, resolved, out_size - 1);
+    out[out_size - 1] = '\0';
+    return 0;
+}
+
+static int resolve_path(const char *normalized, const char *root_dir, char *fs_path, size_t fs_path_size) {
+    const char *rel = normalized + 1; /* Skip leading / */
+    int ret = snprintf(fs_path, fs_path_size, "%s/%s", root_dir, rel);
+    if (ret >= (int)fs_path_size) return -1;
+
+    /* Security: resolved normalized path must stay under root_dir */
+    char root_resolved[PATH_MAX];
+    if (realpath(root_dir, root_resolved) == NULL) return -1;
+
+    /* Normalize the combined path without requiring the file to exist */
+    char norm_buf[PATH_MAX];
+    strncpy(norm_buf, fs_path, sizeof(norm_buf) - 1);
+    norm_buf[sizeof(norm_buf) - 1] = '\0';
+
+    /* Walk the path manually to collapse . and .. without realpath on the file */
+    char resolved[PATH_MAX];
+    char *s = resolved, *end = resolved + sizeof(resolved) - 1;
+    const char *src = norm_buf;
+    *s = '\0';
+
+    while (*src) {
+        while (*src == '/') {
+            if (s < end) *s++ = '/';
+            src++;
+        }
+        if (*src == '\0') break;
+
+        const char *seg_start = src;
+        while (*src && *src != '/') src++;
+        size_t seg_len = src - seg_start;
+
+        if (seg_len == 1 && seg_start[0] == '.') {
+            if (s > resolved && *(s - 1) == '/') s--;
+        } else if (seg_len == 2 && seg_start[0] == '.' && seg_start[1] == '.') {
+            if (s > resolved && *(s - 1) == '/') s--;
+            while (s > resolved && *(s - 1) != '/') s--;
+        } else {
+            if (s + seg_len >= end) return -1;
+            memcpy(s, seg_start, seg_len);
+            s += seg_len;
+        }
+    }
+    if (s == resolved) *s++ = '/';
+    *s = '\0';
+
+    /* Verify resolved path is under root */
+    if (strncmp(resolved, root_resolved, strlen(root_resolved)) != 0) return -1;
+    size_t root_len = strlen(root_resolved);
+    if (resolved[root_len] != '/' && resolved[root_len] != '\0') return -1;
+
+    strncpy(fs_path, resolved, fs_path_size - 1);
+    fs_path[fs_path_size - 1] = '\0';
+    return 0;
+}
+
 static int parse_http_request(ConnectionState *conn) {
     char *method_end = strchr(conn->buffer, ' ');
     if (!method_end) return -1;
@@ -140,11 +282,19 @@ static void handle_request(ConnectionState *conn) {
         return;
     }
 
+    /* Normalize path: URL decode, collapse slashes, resolve . and .., security checks */
+    char normalized[MAX_PATH];
+    if (normalize_path(conn->path, normalized, sizeof(normalized)) < 0) {
+        char response[] = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
+        write_all(conn->fd, response, strlen(response));
+        return;
+    }
+
     char full_path[PATH_MAX];
-    if (strcmp(conn->path, "/") == 0) {
-        snprintf(full_path, sizeof(full_path), "%s/index.html", server_config.root_dir);
-    } else {
-        snprintf(full_path, sizeof(full_path), "%s%s", server_config.root_dir, conn->path);
+    if (resolve_path(normalized, server_config.root_dir, full_path, sizeof(full_path)) < 0) {
+        char response[] = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
+        write_all(conn->fd, response, strlen(response));
+        return;
     }
 
     struct stat st;
