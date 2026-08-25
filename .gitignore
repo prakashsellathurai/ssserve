@@ -7,3 +7,5 @@ __pycache__/
 /.asv/*
 !/.asv/results/
 tests/profiles/
+.worktrees/
+.env

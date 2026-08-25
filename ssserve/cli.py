@@ -4,6 +4,7 @@ import cProfile
 import atexit
 import os
 import pstats
+import re
 import signal
 import socket
 import ssl
@@ -23,6 +24,67 @@ from ssserve.config import load_config
 from ssserve.handler import ServeHandler
 from ssserve.livereload import LiveReload
 from ssserve.network import Address, find_free_port, get_lan_ip, parse_listen
+
+
+def _route_to_regex(pattern: str) -> re.Pattern:
+    parts = []
+    for segment in pattern.split("/"):
+        if segment.startswith(":"):
+            parts.append(f"(?P<{segment[1:]}>[^/]+)")
+        elif "*" in segment:
+            parts.append(re.escape(segment).replace(r"\*\*", ".*").replace(r"\*", "[^/]*"))
+        else:
+            parts.append(re.escape(segment))
+    return re.compile(f"^{'/'.join(parts)}$")
+
+
+def _apply_segments(template: str, groups: dict[str, str]) -> str:
+    result = template
+    for key, val in groups.items():
+        result = result.replace(f":{key}", val)
+    return result
+
+
+def _make_config_callback(cfg):
+    """Create a config callback for the C server from a Config object."""
+    redirects = []
+    for rule in cfg.redirects:
+        redirects.append({
+            "source": rule.source,
+            "destination": rule.destination,
+            "type": rule.type,
+            "compiled_regex": rule.compiled_regex,
+        })
+
+    rewrites = []
+    for rule in cfg.rewrites:
+        rewrites.append({
+            "source": rule.source,
+            "destination": rule.destination,
+            "compiled_regex": rule.compiled_regex,
+        })
+
+    def callback(path: str):
+        # Check redirects
+        for rule in redirects:
+            m = rule["compiled_regex"].match(path)
+            if m:
+                dest = _apply_segments(rule["destination"], m.groupdict())
+                return dest, rule["type"]
+
+        # Check rewrites
+        for rule in rewrites:
+            m = rule["compiled_regex"].match(path)
+            if m:
+                dest = _apply_segments(rule["destination"], m.groupdict())
+                return dest, 200
+
+        return None
+
+    # Only return callback if there are rules to check
+    if redirects or rewrites:
+        return callback
+    return None
 
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
@@ -131,6 +193,7 @@ def _print_startup(
 @click.option("--no-port-switching", is_flag=True, help="Don't switch to another port when port is taken")
 @click.option("-r", "--live-reload", is_flag=True, help="Enable live reload on file changes")
 @click.option("--profile", type=str, default=None, help="Dump cProfile stats to this file on shutdown")
+@click.option("--python-server", is_flag=True, help="Use Python HTTP server instead of C server")
 @click.version_option(version=__version__, prog_name="ssserve")
 def main(
     path: str,
@@ -150,6 +213,7 @@ def main(
     no_port_switching: bool,
     live_reload: bool,
     profile: str | None,
+    python_server: bool,
 ) -> None:
     global _profiler, _profile_path
     if profile:
@@ -212,36 +276,73 @@ def main(
 
     ssl_active = ssl_cert is not None and ssl_key is not None
 
-    if len(listeners) == 1:
-        addr, port_switched = listeners[0]
-        _print_startup(addr, cors, caching, ssl_active, no_port_switching, no_compression, port_switched)
-        server = _create_server(addr, ServeHandler, ssl_cert, ssl_key, ssl_pass)
-        try:
-            server.serve_forever()
-        except KeyboardInterrupt:
-            click.echo("\n  Shutting down...")
-            server.shutdown()
-    else:
-        servers = []
-        for addr, port_switched in listeners:
+    if not python_server:
+        if len(listeners) > 1:
+            click.echo("  Warning: C server does not support multiple listeners, using Python server", err=True)
+            python_server = True
+        else:
+            try:
+                from ssserve._server import serve
+                click.echo("  Using C server (epoll + thread pool)")
+                if lr:
+                    click.echo("  ➜ Live reload enabled")
+                config_callback = _make_config_callback(cfg)
+                custom_headers_list = []
+                for rule in cfg.headers:
+                    for h in rule.headers:
+                        custom_headers_list.append((rule.source, h["key"], h.get("value", "")))
+                for addr, port_switched in listeners:
+                    _print_startup(addr, cors, caching, ssl_active, no_port_switching, no_compression, port_switched)
+                    serve(
+                        port=addr.port,
+                        root_dir=root_dir,
+                        cors=cors,
+                        caching=caching,
+                        etag=cfg.etag,
+                        no_compression=no_compression,
+                        symlinks=symlinks,
+                        config_callback=config_callback,
+                        custom_headers=custom_headers_list if custom_headers_list else None,
+                        clean_urls=1 if cfg.clean_urls else 0,
+                        trailing_slash=-1 if cfg.trailing_slash is None else (1 if cfg.trailing_slash else 0),
+                        single=1 if single else 0,
+                        live_reload=lr,
+                    )
+            except ImportError:
+                click.echo("  Warning: C server not available, using Python server", err=True)
+                python_server = True
+
+    if python_server:
+        if len(listeners) == 1:
+            addr, port_switched = listeners[0]
             _print_startup(addr, cors, caching, ssl_active, no_port_switching, no_compression, port_switched)
             server = _create_server(addr, ServeHandler, ssl_cert, ssl_key, ssl_pass)
-            servers.append(server)
-
-        click.echo(f"  Serving {len(servers)} listeners")
-        click.echo("")
-
-        try:
-            for server in servers:
-                import threading
-                t = threading.Thread(target=server.serve_forever, daemon=True)
-                t.start()
-            while True:
-                time.sleep(3600)
-        except KeyboardInterrupt:
-            click.echo("\n  Shutting down...")
-            for server in servers:
+            try:
+                server.serve_forever()
+            except KeyboardInterrupt:
+                click.echo("\n  Shutting down...")
                 server.shutdown()
+        else:
+            servers = []
+            for addr, port_switched in listeners:
+                _print_startup(addr, cors, caching, ssl_active, no_port_switching, no_compression, port_switched)
+                server = _create_server(addr, ServeHandler, ssl_cert, ssl_key, ssl_pass)
+                servers.append(server)
+
+            click.echo(f"  Serving {len(servers)} listeners")
+            click.echo("")
+
+            try:
+                for server in servers:
+                    import threading
+                    t = threading.Thread(target=server.serve_forever, daemon=True)
+                    t.start()
+                while True:
+                    time.sleep(3600)
+            except KeyboardInterrupt:
+                click.echo("\n  Shutting down...")
+                for server in servers:
+                    server.shutdown()
 
 
 if __name__ == "__main__":

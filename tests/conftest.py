@@ -16,6 +16,15 @@ import pytest
 PROFILES_DIR = Path(__file__).resolve().parent / "profiles"
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--python-server",
+        action="store_true",
+        default=False,
+        help="Use Python HTTP server instead of C server",
+    )
+
+
 def find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("", 0))
@@ -77,6 +86,7 @@ def _start_server(
     extra_args: list[str] | None = None,
     config: dict | None = None,
     profile_path: str | None = None,
+    use_python_server: bool = False,
 ) -> tuple[subprocess.Popen, int]:
     if config:
         (serve_dir / "serve.json").write_text(json.dumps(config))
@@ -88,6 +98,8 @@ def _start_server(
         + (extra_args or [])
         + (["--profile", profile_path] if profile_path else [])
     )
+    if use_python_server:
+        args = list(args) + ["--python-server"]
     proc = subprocess.Popen(
         args,
         stdout=subprocess.DEVNULL,
@@ -104,18 +116,20 @@ def test_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def server_url(test_dir: Path) -> str:
-    proc, port = _start_server(test_dir)
+def server_url(test_dir: Path, request) -> str:
+    use_python = request.config.getoption("--python-server")
+    proc, port = _start_server(test_dir, use_python_server=use_python)
     yield f"http://localhost:{port}"
     _stop_server(proc)
 
 
 @pytest.fixture
-def server_factory() -> type:
+def server_factory(request) -> type:
     started = []
+    use_python = request.config.getoption("--python-server")
 
     def _start(serve_dir: Path, extra_args: list[str] | None = None, config: dict | None = None) -> str:
-        proc, port = _start_server(serve_dir, extra_args=extra_args, config=config)
+        proc, port = _start_server(serve_dir, extra_args=extra_args, config=config, use_python_server=use_python)
         started.append(proc)
         return f"http://localhost:{port}"
 
@@ -150,8 +164,9 @@ def _warm_up(url: str, requests: int = 5) -> None:
 def profiled_server(test_dir: Path, request) -> tuple[str, Path]:
     PROFILES_DIR.mkdir(parents=True, exist_ok=True)
     prof_path = str(PROFILES_DIR / f"{request.node.name}.prof")
+    use_python = request.config.getoption("--python-server")
 
-    proc, port = _start_server(test_dir, profile_path=prof_path)
+    proc, port = _start_server(test_dir, profile_path=prof_path, use_python_server=use_python)
     url = f"http://localhost:{port}"
 
     _warm_up(url)
@@ -169,13 +184,14 @@ def memray_server(test_dir: Path, request) -> tuple[str, Path]:
     PROFILES_DIR.mkdir(parents=True, exist_ok=True)
     out_path = PROFILES_DIR / f"{request.node.name}.bin"
     out_path.unlink(missing_ok=True)
+    use_python = request.config.getoption("--python-server")
 
     try:
         import memray  # noqa: F401
     except ImportError:
         pytest.skip("memray not installed")
         # Need a dummy yield for cleanup
-        proc, port = _start_server(test_dir)
+        proc, port = _start_server(test_dir, use_python_server=use_python)
         yield f"http://localhost:{port}", PROFILES_DIR
         _stop_server(proc)
         return
@@ -190,6 +206,8 @@ def memray_server(test_dir: Path, request) -> tuple[str, Path]:
         "-m", "ssserve", str(test_dir), "-l", str(port),
         "--no-port-switching", "-L"
     ]
+    if use_python:
+        args.append("--python-server")
     proc = subprocess.Popen(
         args,
         stdout=subprocess.DEVNULL,
@@ -208,7 +226,8 @@ def memray_server(test_dir: Path, request) -> tuple[str, Path]:
 
 @pytest.fixture
 def sampled_server(test_dir: Path, request) -> tuple[str, Path]:
-    proc, port = _start_server(test_dir)
+    use_python = request.config.getoption("--python-server")
+    proc, port = _start_server(test_dir, use_python_server=use_python)
     url = f"http://localhost:{port}"
 
     py_spy = shutil.which("py-spy")

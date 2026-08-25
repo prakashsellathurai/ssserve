@@ -22,11 +22,18 @@ name = "ssserve._fastops"
 sources = ["ssserve/_fastops.c"]
 libraries = ["z"]
 
+[[tool.setuptools.ext-modules]]
+name = "ssserve._server"
+sources = ["ssserve/_server.c"]
+libraries = ["pthread", "z"]
+
 [tool.pytest.ini_options]
 markers = [
     "profile: profiling tests (CPU, memory, sampling)",
+    "c_server_config: C server config for redirects/rewrites",
 ]
 testpaths = ["tests"]
+addopts = ""
 
 [dependency-groups]
 dev = [
