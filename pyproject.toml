@@ -17,16 +17,6 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 packages = ["ssserve"]
 
-[[tool.setuptools.ext-modules]]
-name = "ssserve._fastops"
-sources = ["ssserve/_fastops.c"]
-libraries = ["z"]
-
-[[tool.setuptools.ext-modules]]
-name = "ssserve._server"
-sources = ["ssserve/_server.c"]
-libraries = ["pthread", "z"]
-
 [tool.pytest.ini_options]
 markers = [
     "profile: profiling tests (CPU, memory, sampling)",
