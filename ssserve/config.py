@@ -5,9 +5,10 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 
-def _route_to_regex(pattern: str) -> re.Pattern:
+def _route_to_regex(pattern: str) -> re.Pattern[str]:
     parts = []
     for segment in pattern.split("/"):
         if segment.startswith(":"):
@@ -23,7 +24,7 @@ def _route_to_regex(pattern: str) -> re.Pattern:
 class Rewrite:
     source: str
     destination: str
-    compiled_regex: re.Pattern = field(init=False, repr=False)
+    compiled_regex: re.Pattern[str] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.compiled_regex = _route_to_regex(self.source)
@@ -34,7 +35,7 @@ class Redirect:
     source: str
     destination: str
     type: int = 301
-    compiled_regex: re.Pattern = field(init=False, repr=False)
+    compiled_regex: re.Pattern[str] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.compiled_regex = _route_to_regex(self.source)
@@ -65,16 +66,14 @@ class Config:
         return cls()
 
 
-def merge_config(base: Config, overrides: dict) -> Config:
+def merge_config(base: Config, overrides: dict[str, Any]) -> Config:
     kw = {}
     for key, val in overrides.items():
         match key:
             case "public":
                 kw["public"] = str(val) if val else None
             case "cleanUrls":
-                if isinstance(val, bool):
-                    kw["clean_urls"] = val
-                elif isinstance(val, list):
+                if isinstance(val, (bool, list)):
                     kw["clean_urls"] = val
             case "rewrites":
                 kw["rewrites"] = [Rewrite(**r) for r in val]
@@ -83,9 +82,7 @@ def merge_config(base: Config, overrides: dict) -> Config:
             case "headers":
                 kw["headers"] = [HeaderRule(**h) for h in val]
             case "directoryListing":
-                if isinstance(val, bool):
-                    kw["directory_listing"] = val
-                elif isinstance(val, list):
+                if isinstance(val, (bool, list)):
                     kw["directory_listing"] = val
             case "unlisted":
                 kw["unlisted"] = list(val)

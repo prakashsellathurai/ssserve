@@ -5,8 +5,6 @@ import html
 import io
 import json
 import os
-import re
-import time
 import urllib.parse
 from email.utils import formatdate, parsedate
 from fnmatch import fnmatch
@@ -164,12 +162,12 @@ class ServeHandler(BaseHTTPRequestHandler):
                     body_bytes = f.read()
             elif status_code == 404:
                 body_bytes = (
-                    "<!doctype html><html><head><meta charset='utf-8'>"
-                    "<title>404 Not Found</title>"
-                    "<style>body{font-family:sans-serif;padding:40px;text-align:center}"
-                    "h1{font-weight:400;color:#333}</style></head>"
-                    "<body><h1>404</h1><p>Not Found</p></body></html>"
-                ).encode("utf-8")
+                    b"<!doctype html><html><head><meta charset='utf-8'>"
+                    b"<title>404 Not Found</title>"
+                    b"<style>body{font-family:sans-serif;padding:40px;text-align:center}"
+                    b"h1{font-weight:400;color:#333}</style></head>"
+                    b"<body><h1>404</h1><p>Not Found</p></body></html>"
+                )
             else:
                 body_bytes = (
                     f"<!doctype html><html><head><meta charset='utf-8'>"
@@ -178,7 +176,7 @@ class ServeHandler(BaseHTTPRequestHandler):
                     f"h1{{font-weight:400;color:#333}}p{{color:#666}}</style></head>"
                     f"<body><h1>{status_code}</h1>"
                     f"<p>{html.escape(message)}</p></body></html>"
-                ).encode("utf-8")
+                ).encode()
             _error_cache.set(cache_key, body_bytes)
 
         self.send_response(status)
@@ -218,10 +216,7 @@ class ServeHandler(BaseHTTPRequestHandler):
         return self._resolve_path_fast(normalized)
 
     def _resolve_path_fast(self, url_path: str) -> str | None:
-        if self.config.public:
-            base = os.path.join(self.root_dir, self.config.public)
-        else:
-            base = self.root_dir
+        base = os.path.join(self.root_dir, self.config.public) if self.config.public else self.root_dir
         fs_path = os.path.normpath(os.path.join(base, url_path.lstrip("/")))
 
         if not fs_path.startswith(os.path.normpath(base)):
@@ -267,9 +262,8 @@ class ServeHandler(BaseHTTPRequestHandler):
                 return url_path + "/"
             if url_path.endswith("/") and not self.config.trailing_slash:
                 return url_path.rstrip("/") or "/"
-        if fs_path and os.path.isfile(fs_path):
-            if url_path.endswith("/") and not self.config.trailing_slash:
-                return url_path.rstrip("/") or "/"
+        if fs_path and os.path.isfile(fs_path) and url_path.endswith("/") and not self.config.trailing_slash:
+            return url_path.rstrip("/") or "/"
         return None
 
     def _check_redirects(self, url_path: str) -> tuple[str, int] | None:
@@ -447,9 +441,7 @@ class ServeHandler(BaseHTTPRequestHandler):
             elif _lr_html is not None:
                 self.wfile.write(_lr_html)
             else:
-                if raw_content is None:
-                    # Try sendfile for files > 64KB (avoids copying through userspace)
-                    if file_size > 65536:
+                if raw_content is None and file_size > 65536:
                         try:
                             with open(fs_path, "rb") as f:
                                 in_fd = f.fileno()

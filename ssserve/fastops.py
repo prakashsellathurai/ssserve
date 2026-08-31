@@ -14,8 +14,8 @@ try:
     from ssserve._fastops import CCache as _CCache
     from ssserve._fastops import etag as _c_etag
     from ssserve._fastops import fast_gzip as _c_gzip
-    from ssserve._fastops import sendfile as _c_sendfile
     from ssserve._fastops import guess_type as _c_guess_type
+    from ssserve._fastops import sendfile as _c_sendfile
     _HAS_C = True
 except ImportError:
     _HAS_C = False

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 import time
-
 
 INJECT_SCRIPT = """<script>
 (function(){var v=%d;
@@ -38,10 +38,8 @@ class LiveReload:
                     if fn.startswith("."):
                         continue
                     fp = os.path.join(dirpath, fn)
-                    try:
+                    with contextlib.suppress(OSError):
                         snap[fp] = os.stat(fp).st_mtime
-                    except OSError:
-                        pass
         except OSError:
             pass
         return snap
@@ -49,10 +47,7 @@ class LiveReload:
     def _compare_snapshots(self, old: dict[str, float], new: dict[str, float]) -> bool:
         if set(old.keys()) != set(new.keys()):
             return True
-        for key in old:
-            if old[key] != new[key]:
-                return True
-        return False
+        return any(old[key] != new[key] for key in old)
 
     def _watch(self) -> None:
         self._snapshot = self._walk()

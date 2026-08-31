@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-import cProfile
 import atexit
+import cProfile
 import os
-import pstats
-import re
 import signal
 import socket
 import ssl
-import socketserver
 import sys
 import time
 from http.server import HTTPServer
@@ -16,36 +13,17 @@ from socketserver import ThreadingMixIn
 
 import click
 
-_profiler: cProfile.Profile | None = None
-_profile_path: str | None = None
-
 from ssserve import __version__
-from ssserve.config import load_config
-from ssserve.handler import ServeHandler
+from ssserve.config import Config, load_config
+from ssserve.handler import ServeHandler, _apply_segments
 from ssserve.livereload import LiveReload
 from ssserve.network import Address, find_free_port, get_lan_ip, parse_listen
 
-
-def _route_to_regex(pattern: str) -> re.Pattern:
-    parts = []
-    for segment in pattern.split("/"):
-        if segment.startswith(":"):
-            parts.append(f"(?P<{segment[1:]}>[^/]+)")
-        elif "*" in segment:
-            parts.append(re.escape(segment).replace(r"\*\*", ".*").replace(r"\*", "[^/]*"))
-        else:
-            parts.append(re.escape(segment))
-    return re.compile(f"^{'/'.join(parts)}$")
+_profiler: cProfile.Profile | None = None
+_profile_path: str | None = None
 
 
-def _apply_segments(template: str, groups: dict[str, str]) -> str:
-    result = template
-    for key, val in groups.items():
-        result = result.replace(f":{key}", val)
-    return result
-
-
-def _make_config_callback(cfg):
+def _make_config_callback(cfg: Config):
     """Create a config callback for the C server from a Config object."""
     redirects = []
     for rule in cfg.redirects:
@@ -99,7 +77,7 @@ def _dump_profile() -> None:
         _profiler.dump_stats(_profile_path)
 
 
-def _handle_sigterm(signum, frame):
+def _handle_sigterm(signum: int, frame: object) -> None:
     _dump_profile()
     os._exit(0)
 
@@ -112,9 +90,9 @@ def _create_server(
     ssl_pass: str | None = None,
 ) -> ThreadingHTTPServer:
     if addr.scheme == "unix":
-        if os.path.exists(addr.path):
+        if addr.path and os.path.exists(addr.path):
             os.unlink(addr.path)
-        server = ThreadingHTTPServer(addr.path, handler_class)
+        server = ThreadingHTTPServer(addr.path or "", handler_class)
         server.server_address = addr.path
     else:
         host = addr.host or "0.0.0.0"
@@ -126,7 +104,7 @@ def _create_server(
         if ssl_pass:
             with open(ssl_pass) as f:
                 passphrase = f.read().strip()
-        ctx = ssl.SSLContext(ssl.Purpose.CLIENT_AUTH)
+        ctx = ssl.SSLContext(ssl.Purpose.CLIENT_AUTH)  # type: ignore[call-overload]
         ctx.load_cert_chain(ssl_cert, ssl_key, passphrase if passphrase else None)
         server.socket = ctx.wrap_socket(server.socket, server_side=True)
 
@@ -143,7 +121,6 @@ def _print_startup(
     port_switched: bool = False,
 ) -> None:
     scheme = "https" if ssl_active else "http"
-    host = addr.host or "0.0.0.0"
 
     click.echo("")
     click.echo(f"  ssserve v{__version__}")
@@ -274,7 +251,7 @@ def main(
                     click.echo(f"  Port {addr.port} is in use, using port {new_port} instead", err=True)
                     addr.port = new_port
                     port_switched = True
-            except (ConnectionRefusedError, OSError, socket.timeout):
+            except (ConnectionRefusedError, OSError, TimeoutError):
                 pass
 
         listeners.append((addr, port_switched))

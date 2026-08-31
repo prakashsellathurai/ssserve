@@ -1,6 +1,4 @@
-import os
 import socket
-import struct
 from dataclasses import dataclass
 
 
@@ -34,10 +32,7 @@ def parse_listen(value: str) -> Address:
                 raise ValueError(f"Invalid IPv6 address in listen URI: {value}")
             host = rest[1:bracket_end]
             after = rest[bracket_end + 1 :]
-            if after.startswith(":"):
-                port = int(after[1:])
-            else:
-                port = 3000
+            port = int(after[1:]) if after.startswith(":") else 3000
         elif ":" in rest:
             host, port_str = rest.rsplit(":", 1)
             port = int(port_str)
@@ -59,8 +54,8 @@ def parse_listen(value: str) -> Address:
         host, port_str = value.rsplit(":", 1)
         try:
             port = int(port_str)
-        except ValueError:
-            raise ValueError(f"Invalid listen URI: {value}")
+        except ValueError as err:
+            raise ValueError(f"Invalid listen URI: {value}") from err
         return Address(scheme="tcp", host=host, port=port, path=None)
 
     return Address(scheme="tcp", host=value, port=3000, path=None)

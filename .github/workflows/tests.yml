@@ -28,5 +28,61 @@ jobs:
       - name: Install dependencies
         run: uv sync --group dev
 
-      - name: Run tests
-        run: uv run pytest tests/ -v
+      - name: Run tests with coverage
+        run: uv run pytest tests/ -v --cov=ssserve --cov-branch --cov-report=term-missing --cov-fail-under=100
+
+      - name: Type checking (mypy strict)
+        run: uv run mypy ssserve/ --strict
+
+      - name: Linting (ruff)
+        run: uv run ruff check ssserve/
+
+      - name: Dead code detection (vulture)
+        run: uv run vulture ssserve/ --min-confidence 80
+
+      - name: Complexity check (radon cyclomatic)
+        run: uv run radon cc ssserve/ -a -nc --total-average --min C
+
+      - name: Complexity check (radon cognitive via raw)
+        run: uv run radon mi ssserve/ --min C
+
+      - name: Halstead difficulty check
+        run: |
+          uv run python -c "
+          import radon.cli.harvest as h
+          import json
+          results = h.CCHarvester(['ssserve/'], dict)
+          for result in results:
+              for block in result:
+                  if hasattr(block, 'difficulty') and block.difficulty >= 80:
+                      print(f'FAIL: {block.name} has Halstead difficulty {block.difficulty}')
+                      exit(1)
+          print('All Halstead difficulties < 80')
+          "
+
+      - name: Dead code check (LOC per file < 500)
+        run: |
+          uv run python -c "
+          import os
+          max_loc = 500
+          failed = False
+          for root, dirs, files in os.walk('ssserve'):
+              dirs[:] = [d for d in dirs if d not in {'.git', '__pycache__', '.mypy_cache'}]
+              for f in files:
+                  if f.endswith('.py'):
+                      path = os.path.join(root, f)
+                      with open(path) as fh:
+                          loc = sum(1 for _ in fh)
+                      if loc >= max_loc:
+                          print(f'FAIL: {path} has {loc} LOC (limit {max_loc})')
+                          failed = True
+          if failed:
+              exit(1)
+          print(f'All Python files < {max_loc} LOC')
+          "
+
+      - name: Redundant code check (ruff F811, F401)
+        run: uv run ruff check ssserve/ --select F811,F401
+
+      - name: Type annotations check (no any/unknown)
+        run: uv run mypy ssserve/ --strict --disallow-any-explicit --disallow-any-unimported
