@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
 from ssserve.cache import LockFreeCache
+from ssserve.color import status_color
 from ssserve.config import Config
 from ssserve.fastops import etag as fast_etag
 from ssserve.fastops import fast_gzip
@@ -141,7 +142,8 @@ class ServeHandler(BaseHTTPRequestHandler):
     def _log_request(self, status: int, size: int = 0) -> None:
         if not self.logging_enabled:
             return
-        self.log_message('"%s %s %s" %d %d', self.command, self.path, self.request_version, status, size)
+        log_line = f'"{self.command} {self.path} {self.request_version}" {status_color(status)} {size}'
+        self.log_message("%s", log_line)
 
     def _send_redirect(self, location: str, status: int = 301) -> None:
         self.send_response(status)
