@@ -20,6 +20,7 @@ _profiler: cProfile.Profile | None = None
 _profile_path: str | None = None
 
 from ssserve import __version__
+from ssserve.color import bold, cyan, dim, green, red, yellow
 from ssserve.config import load_config
 from ssserve.handler import ServeHandler
 from ssserve.livereload import LiveReload
@@ -146,31 +147,31 @@ def _print_startup(
     host = addr.host or "0.0.0.0"
 
     click.echo("")
-    click.echo(f"  ssserve v{__version__}")
+    click.echo(f"  {bold('ssserve')} v{__version__}")
     click.echo("")
 
     if addr.scheme == "unix":
-        click.echo(f"  ➜ Local:   unix:{addr.path}")
+        click.echo(f"  ➜ Local:   {cyan(f'unix:{addr.path}')}")
     else:
-        local_url = f"  ➜ Local:   {scheme}://localhost:{addr.port}"
+        local_url = f"  ➜ Local:   {cyan(f'{scheme}://localhost:{addr.port}')}"
         if port_switched:
-            local_url += f" (port {addr.port} was in use, switched)"
+            local_url += f" {dim(f'(port {addr.port} was in use, switched)')}"
         click.echo(local_url)
 
         lan_ip = get_lan_ip()
         if lan_ip:
-            click.echo(f"  ➜ Network: {scheme}://{lan_ip}:{addr.port}")
+            click.echo(f"  ➜ Network: {cyan(f'{scheme}://{lan_ip}:{addr.port}')}")
 
     click.echo("")
 
     if cors:
-        click.echo("  ➜ CORS enabled")
+        click.echo(f"  ➜ {green('CORS enabled')}")
     if not caching:
-        click.echo("  ➜ Browser caching disabled")
+        click.echo(f"  ➜ {yellow('Browser caching disabled')}")
     if ssl_active:
-        click.echo("  ➜ SSL enabled")
+        click.echo(f"  ➜ {green('SSL enabled')}")
     if not no_compression:
-        click.echo("  ➜ Compression enabled (gzip)")
+        click.echo(f"  ➜ {green('Compression enabled (gzip)')}")
 
     click.echo("")
 
@@ -230,13 +231,13 @@ def main(
         workers = max(4, os.cpu_count() or 4)
 
     if not os.path.isdir(root_dir):
-        click.echo(f"Error: {path} is not a directory", err=True)
+        click.echo(f"  {red(f'Error: {path} is not a directory')}", err=True)
         sys.exit(1)
 
     cfg = load_config(config, root_dir)
 
     if ssl_cert and not ssl_key:
-        click.echo("Error: --ssl-key is required when --ssl-cert is provided", err=True)
+        click.echo(f"  {red('Error: --ssl-key is required when --ssl-cert is provided')}", err=True)
         sys.exit(1)
 
     if no_etag:
@@ -260,7 +261,7 @@ def main(
         lr = LiveReload(root_dir)
         lr.start()
         ServeHandler.live_reload = lr
-        click.echo("  ➜ Live reload enabled")
+        click.echo(f"  ➜ {green('Live reload enabled')}")
 
     listeners = []
     for listen_val in listen:
@@ -271,7 +272,7 @@ def main(
             try:
                 with socket.create_connection(("localhost", addr.port), timeout=0.5):
                     new_port = find_free_port(addr.port + 1)
-                    click.echo(f"  Port {addr.port} is in use, using port {new_port} instead", err=True)
+                    click.echo(f"  {yellow(f'Port {addr.port} is in use, using port {new_port} instead')}", err=True)
                     addr.port = new_port
                     port_switched = True
             except (ConnectionRefusedError, OSError, socket.timeout):
@@ -283,14 +284,14 @@ def main(
 
     if not python_server:
         if len(listeners) > 1:
-            click.echo("  Warning: C server does not support multiple listeners, using Python server", err=True)
+            click.echo(f"  {yellow('Warning: C server does not support multiple listeners, using Python server')}", err=True)
             python_server = True
         else:
             try:
                 from ssserve._server import serve
-                click.echo("  Using C server (epoll + thread pool)")
+                click.echo(f"  {green('Using C server (epoll + thread pool)')}")
                 if lr:
-                    click.echo("  ➜ Live reload enabled")
+                    click.echo(f"  ➜ {green('Live reload enabled')}")
                 config_callback = _make_config_callback(cfg)
                 custom_headers_list = []
                 for rule in cfg.headers:
@@ -315,7 +316,7 @@ def main(
                         live_reload=lr,
                     )
             except ImportError:
-                click.echo("  Warning: C server not available, using Python server", err=True)
+                click.echo(f"  {yellow('Warning: C server not available, using Python server')}", err=True)
                 python_server = True
 
     if python_server:
@@ -326,7 +327,7 @@ def main(
             try:
                 server.serve_forever()
             except KeyboardInterrupt:
-                click.echo("\n  Shutting down...")
+                click.echo(f"\n  {dim('Shutting down...')}")
                 server.shutdown()
         else:
             servers = []
@@ -335,7 +336,7 @@ def main(
                 server = _create_server(addr, ServeHandler, ssl_cert, ssl_key, ssl_pass)
                 servers.append(server)
 
-            click.echo(f"  Serving {len(servers)} listeners")
+            click.echo(f"  {bold(f'Serving {len(servers)} listeners')}")
             click.echo("")
 
             try:
@@ -346,7 +347,7 @@ def main(
                 while True:
                     time.sleep(3600)
             except KeyboardInterrupt:
-                click.echo("\n  Shutting down...")
+                click.echo(f"\n  {dim('Shutting down...')}")
                 for server in servers:
                     server.shutdown()
 

@@ -668,7 +668,7 @@ static void render_listing(int client_fd, const char *fs_path, const char *url_p
     #undef APPEND
 
     /* Inject live-reload script into directory listing */
-    if (server_config.live_reload) {
+    if (server_config.live_reload && server_config.live_reload != Py_None) {
         char *lr_content = NULL;
         size_t lr_len = 0;
         if (inject_live_reload_script(body, body_len, &lr_content, &lr_len)) {
@@ -1022,7 +1022,7 @@ static void handle_request(ConnectionState *conn) {
     }
 
     /* Handle live-reload check endpoint */
-    if (server_config.live_reload && strncmp(normalized, "/__ssserve/", 11) == 0) {
+    if (server_config.live_reload && server_config.live_reload != Py_None && strncmp(normalized, "/__ssserve/", 11) == 0) {
         handle_live_reload_check(conn, normalized);
         return;
     }
@@ -1315,7 +1315,7 @@ serve_file:
 
     /* Check if live-reload script injection is needed */
     int use_inject = 0;
-    if (server_config.live_reload && !range_valid && conn->method != HTTP_HEAD && strstr(mime_type, "text/html")) {
+    if (server_config.live_reload && server_config.live_reload != Py_None && !range_valid && conn->method != HTTP_HEAD && strstr(mime_type, "text/html")) {
         use_inject = 1;
     }
 
